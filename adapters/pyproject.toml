@@ -1,0 +1,16 @@
+[project]
+name = "green-adapters"
+version = "0.1.0"
+description = "Pluggable environment adapters. Each owns everything environment-specific."
+requires-python = ">=3.12"
+dependencies = ["green-core"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/green"]
+
+[tool.uv.sources]
+green-core = { workspace = true }

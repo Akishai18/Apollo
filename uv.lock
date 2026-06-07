@@ -4,12 +4,16 @@ requires-python = ">=3.12"
 
 [manifest]
 members = [
+    "green-adapters",
     "green-core",
+    "green-strategies",
 ]
 
 [manifest.dependency-groups]
 dev = [
+    { name = "green-adapters", editable = "adapters" },
     { name = "green-core", editable = "core" },
+    { name = "green-strategies", editable = "strategies" },
     { name = "hypothesis", specifier = ">=6.120" },
     { name = "pyright", specifier = ">=1.1.390" },
     { name = "pytest", specifier = ">=8.3" },
@@ -35,6 +39,17 @@ wheels = [
 ]
 
 [[package]]
+name = "green-adapters"
+version = "0.1.0"
+source = { editable = "adapters" }
+dependencies = [
+    { name = "green-core" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "green-core", editable = "core" }]
+
+[[package]]
 name = "green-core"
 version = "0.1.0"
 source = { editable = "core" }
@@ -44,6 +59,17 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [{ name = "pydantic", specifier = ">=2.10" }]
+
+[[package]]
+name = "green-strategies"
+version = "0.1.0"
+source = { editable = "strategies" }
+dependencies = [
+    { name = "green-core" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "green-core", editable = "core" }]
 
 [[package]]
 name = "hypothesis"

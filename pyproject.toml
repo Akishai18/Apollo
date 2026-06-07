@@ -1,12 +1,16 @@
 [tool.uv.workspace]
-members = ["core"]
+members = ["core", "adapters", "strategies"]
 
 [tool.uv.sources]
 green-core = { workspace = true }
+green-adapters = { workspace = true }
+green-strategies = { workspace = true }
 
 [dependency-groups]
 dev = [
     "green-core",
+    "green-adapters",
+    "green-strategies",
     "ruff>=0.9",
     "pyright>=1.1.390",
     "pytest>=8.3",
@@ -16,7 +20,7 @@ dev = [
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-src = ["core/src"]
+src = ["core/src", "adapters/src", "strategies/src"]
 
 [tool.ruff.lint]
 select = [
@@ -34,8 +38,15 @@ pythonVersion = "3.12"
 typeCheckingMode = "strict"
 venvPath = "."
 venv = ".venv"
-include = ["core/src", "core/tests"]
+include = [
+    "core/src",
+    "core/tests",
+    "adapters/src",
+    "adapters/tests",
+    "strategies/src",
+    "strategies/tests",
+]
 
 [tool.pytest.ini_options]
-testpaths = ["core/tests"]
+testpaths = ["core/tests", "adapters/tests", "strategies/tests"]
 addopts = "-ra"

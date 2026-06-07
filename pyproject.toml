@@ -1,0 +1,41 @@
+[tool.uv.workspace]
+members = ["core"]
+
+[tool.uv.sources]
+green-core = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "green-core",
+    "ruff>=0.9",
+    "pyright>=1.1.390",
+    "pytest>=8.3",
+    "hypothesis>=6.120",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["core/src"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "SIM", # flake8-simplify
+    "RUF", # ruff-specific
+]
+
+[tool.pyright]
+pythonVersion = "3.12"
+typeCheckingMode = "strict"
+venvPath = "."
+venv = ".venv"
+include = ["core/src", "core/tests"]
+
+[tool.pytest.ini_options]
+testpaths = ["core/tests"]
+addopts = "-ra"

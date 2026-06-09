@@ -4,8 +4,8 @@
 > phases land, decisions change, or scope shifts. Per-layer contracts live in
 > each layer's `CLAUDE.md`; this doc is the roadmap, decisions, and status.
 
-**Last updated:** 2026-06-07
-**Current phase:** Phase 2 (First faithful environment) — next
+**Last updated:** 2026-06-08
+**Current phase:** Phase 3 (Validation — recorder + overfit gate) — next
 **Status legend:** `[x]` done · `[~]` in progress · `[ ]` not started
 
 ---
@@ -153,15 +153,20 @@ future. No LLM, no web, no real data, no sandbox hardening.
 buy-and-hold ~flat on seeded OU data); guarantee property-tested; engine PnL
 exact on synthetic data. 13 tests green; ruff + pyright-strict clean.
 
-### Phase 2 — First faithful environment `[ ]` NEXT
+### Phase 2 — First faithful environment `[x]` done
 **Goal:** one real environment, modeled honestly.
-- [ ] `market_data` adapter: OHLCV load from vendored Parquet fixture
-- [ ] Realistic fills: next-bar open + slippage + fees/commission
-- [ ] Position limits / cash constraints
-- [ ] Indicators in the view (rolling windows, SMA/EMA up-to-now)
-- [ ] `MetricsSpec` for market PnL
+- [x] `market_data` adapter: OHLCV load from committed Parquet fixture
+      (`synthetic.py` generates a deterministic 756-bar GBM fixture; adapter only reads it)
+- [x] Realistic fills: next-bar open + flat-bps slippage + per-share fee
+- [x] Position limits (fills clipped so `|position| <= max_position`)
+- [x] Indicators (`core/indicators.py`: `sma`/`ema`/`zscore`) — pure functions over
+      `view.history` output, lookahead-safe by construction (not view methods)
+- [ ] `MetricsSpec` for market PnL — deferred to Phase 3 (equity still marked generically
+      at `close[t]`; a per-environment metrics contract lands with the recorder upgrade)
 
-**Proof:** mean-reversion vs. buy-and-hold on real-ish data with believable costs.
+**Proof:** `MovingAverageCrossover` vs. buy-and-hold over 756 GBM bars with believable
+costs — crossover does 14 round-trips at next-bar-open prices and slightly trails
+buy-and-hold after frictions (costs matter, exactly as a faithful sim should show).
 
 ### Phase 3 — Validation (the product) `[ ]`
 **Goal:** recorder + overfit gate that reject-with-a-reason.
@@ -253,6 +258,19 @@ value, multiple symbols, indicators up-to-now).
 
 ## 10. Update log
 
+- **2026-06-08** — **Phase 2 complete.** First *faithful* environment shipped:
+  `MarketDataAdapter` (`adapters/market_data.py`) loads a committed, deterministic
+  756-bar GBM OHLCV Parquet fixture (`synthetic.py`, regen via
+  `python -m green.adapters.synthetic`) and models real frictions — **next-bar-open
+  fills** (`open[t+1]`, dropped on the last bar), flat-bps slippage, per-share fee,
+  and position-limit clipping. Added `core/indicators.py` (`sma`/`ema`/`zscore`, pure
+  + lookahead-safe) and `MovingAverageCrossover`. The faithful adapter reuses
+  `SlicedView`, so the lookahead guarantee is unchanged: the simulator may read
+  `open[t+1]` to price a fill, but the `MarketView` still slices to `[0, t]`. 25 tests
+  green (indicators + market-data faithfulness: exact fill price, slippage/fee,
+  limit-clip, no-fill-on-last-bar, Parquet round-trip), ruff + pyright-strict clean.
+  Deferred: `MetricsSpec` (equity still marked generically at `close[t]`) → Phase 3.
+  Next: Phase 3 (recorder upgrade + walk-forward overfit gate).
 - **2026-06-07** — **Phase 1 complete.** Engine loop + `SlicedView` + `Dataset` +
   `PortfolioState` + `Recorder` + `EnvironmentAdapter` port in `core`; `ToyAdapter`
   (OU) in `adapters/`; `MeanReversion` + `BuyAndHold` in new `strategies/` member.

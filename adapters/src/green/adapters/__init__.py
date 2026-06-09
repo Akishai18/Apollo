@@ -2,6 +2,7 @@
 only and must not import other adapters.
 """
 
+from green.adapters.market_data import MarketDataAdapter
 from green.adapters.toy import ToyAdapter
 
-__all__ = ["ToyAdapter"]
+__all__ = ["MarketDataAdapter", "ToyAdapter"]

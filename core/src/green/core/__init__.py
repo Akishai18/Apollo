@@ -7,6 +7,7 @@ sandbox, api, or any environment-specific code.
 from green.core.adapter import EnvironmentAdapter
 from green.core.dataset import Dataset
 from green.core.engine import RunResult, run
+from green.core.indicators import ema, sma, zscore
 from green.core.marketview import MarketView
 from green.core.models import Fill, Order, OrderType, Side
 from green.core.portfolio import PortfolioState
@@ -27,5 +28,8 @@ __all__ = [
     "Side",
     "SlicedView",
     "Strategy",
+    "ema",
     "run",
+    "sma",
+    "zscore",
 ]

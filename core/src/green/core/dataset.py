@@ -48,3 +48,17 @@ class Dataset:
             symbol: {name: vals[: t + 1] for name, vals in fields.items()}
             for symbol, fields in self.series.items()
         }
+
+    def window(self, start: int, end: int) -> Dataset:
+        """Dataset restricted to [start, end) — everything outside is physically
+        absent. The walk-forward gate uses this so a training run cannot touch
+        held-out data even in principle (same construction as the lookahead law).
+        """
+        if not (0 <= start < end <= self.length):
+            raise ValueError("window bounds out of range")
+        return Dataset(
+            series={
+                symbol: {name: vals[start:end] for name, vals in fields.items()}
+                for symbol, fields in self.series.items()
+            }
+        )

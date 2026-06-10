@@ -4,8 +4,8 @@
 > phases land, decisions change, or scope shifts. Per-layer contracts live in
 > each layer's `CLAUDE.md`; this doc is the roadmap, decisions, and status.
 
-**Last updated:** 2026-06-08
-**Current phase:** Phase 3 (Validation — recorder + overfit gate) — next
+**Last updated:** 2026-06-09
+**Current phase:** Phase 4 (API + sandbox) — next
 **Status legend:** `[x]` done · `[~]` in progress · `[ ]` not started
 
 ---
@@ -161,22 +161,36 @@ exact on synthetic data. 13 tests green; ruff + pyright-strict clean.
 - [x] Position limits (fills clipped so `|position| <= max_position`)
 - [x] Indicators (`core/indicators.py`: `sma`/`ema`/`zscore`) — pure functions over
       `view.history` output, lookahead-safe by construction (not view methods)
-- [ ] `MetricsSpec` for market PnL — deferred to Phase 3 (equity still marked generically
-      at `close[t]`; a per-environment metrics contract lands with the recorder upgrade)
+- [x] `MetricsSpec` for market PnL — landed in Phase 3 (`adapter.metrics_spec()`,
+      non-abstract default: daily bars / 252 periods-per-year; environments override)
 
 **Proof:** `MovingAverageCrossover` vs. buy-and-hold over 756 GBM bars with believable
 costs — crossover does 14 round-trips at next-bar-open prices and slightly trails
 buy-and-hold after frictions (costs matter, exactly as a faithful sim should show).
 
-### Phase 3 — Validation (the product) `[ ]`
+### Phase 3 — Validation (the product) `[x]` done
 **Goal:** recorder + overfit gate that reject-with-a-reason.
-- [ ] Recorder upgraded: full metrics + trade log + drawdown (Parquet artifacts)
-- [ ] Walk-forward harness (`core/overfit/`): train/forward split, fit on train,
-      eval on held-out
-- [ ] Parameter sweep (grid) → heatmap data
-- [ ] `Verdict` object: pass/reject + reason + evidence
+- [x] Full metrics + trade log + drawdown (`core/metrics.py`: return/Sharpe/max-DD/
+      win-rate via `compute_metrics`; `core/trades.py`: FIFO `pair_trades` → `Trade`
+      round trips net of fees). Engine/recorder stay dumb; meaning assigned post-hoc.
+      Parquet artifact persistence deferred to Phase 4 (lands with Storage).
+- [x] Walk-forward harness (`core/overfit/`): rolling `Window`s, fit (grid-select) on
+      train, eval chosen params on held-out; training runs use `Dataset.window()` so
+      held-out data is *physically absent* (same construction as the lookahead law);
+      fresh strategy instance per run (no state leaks across the split)
+- [x] Parameter sweep (grid) → heatmap data (`expand_grid`; every `WindowResult`
+      records the full train sweep as `SweepPoint`s)
+- [x] `Verdict` object: pass/reject + legible reason + per-window evidence; three
+      rules: never-profitable-in-sample, insufficient OOS trades, Sharpe-retention
+      collapse (`min_retention`, default 50%)
 
-**Proof:** a curve-fit strategy is rejected with a legible reason; a robust one passes.
+**Proof:** ✓ `LuckyTimer` (fixed-bar-index timing, the canonical curve fit) is
+rejected — "performance collapses out of sample — held-out Sharpe -1.20 retains -69%
+of train Sharpe 1.74"; each window chose a *different* lucky timing in-sample.
+`MeanReversion` on OU passes — held-out Sharpe retains 60% of train. Both deterministic.
+
+**v1 caveat:** held-out runs start cold (indicator warm-up eats the first `lookback`
+bars of each test window) — size `test_size` above the largest lookback in the grid.
 
 ### Phase 4 — API + sandbox `[ ]`
 **Goal:** callable and safe.
@@ -258,6 +272,21 @@ value, multiple symbols, indicators up-to-now).
 
 ## 10. Update log
 
+- **2026-06-09** — **Phase 3 complete — the product exists.** The overfit gate
+  (`core/overfit/`): `run_walk_forward` sweeps a param grid per rolling window,
+  selects on train, evaluates on held-out, and returns a frozen `Verdict`
+  (pass/reject + legible reason + full per-window evidence incl. sweep heatmap
+  data). Train runs execute on `Dataset.window()` slices — held-out data is
+  physically absent during selection — and every run gets a fresh strategy
+  instance (no state leaks). Supporting modules: `core/metrics.py` (`Metrics`,
+  `MetricsSpec` + `adapter.metrics_spec()`, `compute_metrics`: return, annualized
+  Sharpe, max drawdown, win rate) and `core/trades.py` (FIFO `pair_trades` →
+  `Trade` round trips net of fees). **Proof landed:** curve-fit `LuckyTimer`
+  rejected ("collapses out of sample… retains -69%"), `MeanReversion` on OU passes
+  (retains 60%); both deterministic and locked in tests. 39 tests green, ruff +
+  pyright-strict clean. Deferred: Parquet artifact persistence → Phase 4 (Storage);
+  warm-started held-out runs (cold-start warm-up caveat documented). Next: Phase 4
+  (FastAPI + WS, Docker sandbox, Supabase).
 - **2026-06-08** — **Phase 2 complete.** First *faithful* environment shipped:
   `MarketDataAdapter` (`adapters/market_data.py`) loads a committed, deterministic
   756-bar GBM OHLCV Parquet fixture (`synthetic.py`, regen via

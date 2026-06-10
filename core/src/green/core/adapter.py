@@ -13,6 +13,7 @@ from collections.abc import Sequence
 
 from green.core.dataset import Dataset
 from green.core.marketview import MarketView
+from green.core.metrics import MetricsSpec
 from green.core.models import Fill, Order
 from green.core.portfolio import PortfolioState
 
@@ -36,3 +37,8 @@ class EnvironmentAdapter(ABC):
         (fill model, fees, slippage, position limits). The engine applies the
         returned fills to the portfolio state."""
         ...
+
+    def metrics_spec(self) -> MetricsSpec:
+        """How to interpret this environment's numbers (e.g. bar frequency for
+        annualization). Override when the default daily-bar spec is wrong."""
+        return MetricsSpec()

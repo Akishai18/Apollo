@@ -29,3 +29,9 @@ class SlicedView(MarketView):
 
     def last(self, symbol: str, field: str) -> float:
         return self._sliced[symbol][field][-1]
+
+    def symbols(self) -> tuple[str, ...]:
+        return tuple(self._sliced)
+
+    def fields(self, symbol: str) -> tuple[str, ...]:
+        return tuple(self._sliced[symbol])

@@ -5,7 +5,7 @@
 > each layer's `CLAUDE.md`; this doc is the roadmap, decisions, and status.
 
 **Last updated:** 2026-06-09
-**Current phase:** Phase 4 (API + sandbox) — next
+**Current phase:** Phase 4 (API + sandbox) — sandbox done, API next
 **Status legend:** `[x]` done · `[~]` in progress · `[ ]` not started
 
 ---
@@ -192,16 +192,40 @@ of train Sharpe 1.74"; each window chose a *different* lucky timing in-sample.
 **v1 caveat:** held-out runs start cold (indicator warm-up eats the first `lookback`
 bars of each test window) — size `test_size` above the largest lookback in the grid.
 
-### Phase 4 — API + sandbox `[ ]`
+### Phase 4 — API + sandbox `[~]` (sandbox done 2026-06-09)
 **Goal:** callable and safe.
+- [x] Sandbox (`sandbox/` workspace member, depends on green-core only):
+  - [x] `StrategyExecutor` seam — the engine/gate never know *how* `on_tick` runs
+  - [x] `SubprocessExecutor`: strategy source runs in a separate process,
+        kernel-locked-down via setrlimit (CPU, address space, file-size budget,
+        no child processes, and an RLIMIT_NOFILE ceiling — every free fd slot
+        plugged — so new file/socket opens fail with EMFILE at the kernel)
+  - [x] JSON-line protocol (never pickle); strategy `print()` redirected to
+        stderr so it cannot forge frames; wall-clock deadlines per init/tick;
+        SIGKILL on the whole process group on timeout/violation
+  - [x] `SandboxedStrategy(Strategy)` drop-in proxy; single-run enforced;
+        `MarketView` grew `symbols()`/`fields()` so the bar can be enumerated
+  - [x] Typed, legible failures: `StrategyCrash` (with child traceback + stderr
+        tail), `StrategyTimeout`, `ProtocolViolation`
+- [ ] `DockerExecutor`: same protocol over `docker run -i --network=none`
+      (the production wall; subprocess+rlimits is the v1)
 - [ ] FastAPI: submit strategy + config, run, fetch results; WebSocket progress
-- [ ] `StrategyExecutor` seam → Docker-per-run (no net, ro fs, resource limits)
 - [ ] Async job runner (parallel sweep windows)
 - [ ] Supabase: Postgres schema (users, strategies, versions, runs, results),
       Auth/JWT verify, Storage, RLS
 
-**Proof:** submit via API, stream progress, get verdict; infinite-loop/network
-strategy is contained.
+**Proof (sandbox, done):** sandboxed runs are *bit-identical* to native (JSON
+floats round-trip exactly); the full walk-forward gate run through
+`SandboxedStrategy` reproduces the native verdict field-for-field; a probe
+strategy confirms the future never crosses the process boundary; file writes,
+network, and process spawning die with EMFILE at the kernel; infinite loops are
+killed; crashes surface with the strategy's own traceback. 16 sandbox tests.
+
+**v1 caveat:** RLIMIT_AS is not enforced on macOS (memory cap is best-effort
+until DockerExecutor); per-run subprocess spawn costs ~0.3s, acceptable for the
+gate, parallelized later by the job runner.
+
+**Proof (remaining):** submit via API, stream progress, get verdict.
 
 ### Phase 5 — Web `[ ]`
 **Goal:** show the differentiator.
@@ -272,6 +296,27 @@ value, multiple symbols, indicators up-to-now).
 
 ## 10. Update log
 
+- **2026-06-09** — **Phase 4 sandbox shipped — the third differentiator.** New
+  `sandbox/` workspace member (depends on green-core only). Untrusted strategy
+  *source* runs in a separate process (`runner.py`) locked down by the kernel
+  before the first strategy line executes: setrlimit CPU/address-space/file-size
+  budgets, no child processes, and an RLIMIT_NOFILE ceiling (every free fd slot
+  plugged with /dev/null) so any new file or socket open dies with EMFILE.
+  Parent side (`executor.py`): `StrategyExecutor` seam, `SubprocessExecutor`
+  (JSON-line protocol — never pickle; per-init/per-tick wall-clock deadlines;
+  process-group SIGKILL; stderr tail in errors), and `SandboxedStrategy` — a
+  drop-in `Strategy`, so the engine and gate run sandboxed code unchanged.
+  `MarketView` grew `symbols()`/`fields()` (metadata only) for bar enumeration.
+  Process separation *completes* the lookahead guarantee: only bars `<= now`
+  ever cross the boundary. **Proof landed:** sandboxed runs bit-identical to
+  native; full walk-forward gate through the sandbox reproduces the native
+  verdict exactly; probe strategy confirms the horizon; file/network/spawn
+  blocked at the kernel; infinite loops killed (init + tick); crashes legible
+  with the strategy's own traceback; prints can't forge protocol frames; order
+  floods rejected. 55 tests green (16 sandbox), ruff + pyright-strict clean.
+  Caveat: RLIMIT_AS best-effort on macOS → hard memory wall arrives with
+  `DockerExecutor` (same protocol over `docker run -i --network=none`). Next:
+  FastAPI + WS, job runner, Supabase.
 - **2026-06-09** — **Phase 3 complete — the product exists.** The overfit gate
   (`core/overfit/`): `run_walk_forward` sweeps a param grid per rolling window,
   selects on train, evaluates on held-out, and returns a frozen `Verdict`

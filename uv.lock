@@ -6,6 +6,7 @@ requires-python = ">=3.12"
 members = [
     "green-adapters",
     "green-core",
+    "green-sandbox",
     "green-strategies",
 ]
 
@@ -13,6 +14,7 @@ members = [
 dev = [
     { name = "green-adapters", editable = "adapters" },
     { name = "green-core", editable = "core" },
+    { name = "green-sandbox", editable = "sandbox" },
     { name = "green-strategies", editable = "strategies" },
     { name = "hypothesis", specifier = ">=6.120" },
     { name = "pyright", specifier = ">=1.1.390" },
@@ -63,6 +65,21 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [{ name = "pydantic", specifier = ">=2.10" }]
+
+[[package]]
+name = "green-sandbox"
+version = "0.1.0"
+source = { editable = "sandbox" }
+dependencies = [
+    { name = "green-core" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "green-core", editable = "core" },
+    { name = "pydantic", specifier = ">=2.10" },
+]
 
 [[package]]
 name = "green-strategies"

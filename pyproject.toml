@@ -1,16 +1,18 @@
 [tool.uv.workspace]
-members = ["core", "adapters", "strategies"]
+members = ["core", "adapters", "strategies", "sandbox"]
 
 [tool.uv.sources]
 green-core = { workspace = true }
 green-adapters = { workspace = true }
 green-strategies = { workspace = true }
+green-sandbox = { workspace = true }
 
 [dependency-groups]
 dev = [
     "green-core",
     "green-adapters",
     "green-strategies",
+    "green-sandbox",
     "ruff>=0.9",
     "pyright>=1.1.390",
     "pytest>=8.3",
@@ -20,7 +22,7 @@ dev = [
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-src = ["core/src", "adapters/src", "strategies/src"]
+src = ["core/src", "adapters/src", "strategies/src", "sandbox/src"]
 
 [tool.ruff.lint]
 select = [
@@ -45,8 +47,10 @@ include = [
     "adapters/tests",
     "strategies/src",
     "strategies/tests",
+    "sandbox/src",
+    "sandbox/tests",
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["core/tests", "adapters/tests", "strategies/tests"]
+testpaths = ["core/tests", "adapters/tests", "strategies/tests", "sandbox/tests"]
 addopts = "-ra"

@@ -36,3 +36,14 @@ class MarketView(ABC):
     def last(self, symbol: str, field: str) -> float:
         """The current (at `now`) value of `field` for `symbol`."""
         ...
+
+    @abstractmethod
+    def symbols(self) -> tuple[str, ...]:
+        """The symbols this view carries data for. Metadata only — grown so a
+        proxy (e.g. the sandbox) can enumerate and forward the current bar."""
+        ...
+
+    @abstractmethod
+    def fields(self, symbol: str) -> tuple[str, ...]:
+        """The fields available for `symbol` (e.g. open/high/low/close)."""
+        ...

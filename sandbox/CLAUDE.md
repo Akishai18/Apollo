@@ -1,30 +1,69 @@
 # sandbox — the untrusted-code boundary
 
 Running untrusted, possibly LLM-generated Python on our servers is the real new
-infra cost of being a web platform. This layer contains it.
+infra cost of being a web platform. This layer contains it — and it *completes*
+the lookahead guarantee: the strategy runs in another process that only ever
+receives bars up to `now`, so the future never crosses the process boundary.
+
+## Dependency rule
+
+`green-sandbox` depends on **green-core only**. It must never import adapters,
+api, validation, or the generator.
 
 ## Threat model
 
-- The **only** untrusted code is `Strategy.on_tick`. The engine, adapters,
-  recorder, and validation are trusted and run normally.
-- Draw the sandbox tightly around just the strategy call — that keeps it fast and
-  keeps the trusted parts simple.
+- The **only** untrusted code is the strategy source (its imports, class body,
+  `__init__`, and `on_tick`). The engine, adapters, recorder, and gate are
+  trusted and run normally in the parent.
+- The boundary is drawn tightly around the strategy: the parent forwards one
+  bar per tick and validates the orders that come back. Nothing else crosses.
+- Strategies enter as **source-code strings**, never as objects. The protocol
+  is JSON lines — **never pickle** (unpickling untrusted bytes is RCE).
 
-## Isolation requirements
+## How it works (executor.py = trusted parent, runner.py = untrusted child)
 
-- No network. No filesystem access (or strictly read-only, scoped).
-- CPU, memory, and wall-clock limits; kill infinite loops via timeout.
-- Deterministic where possible (no clock/entropy leakage that breaks repro).
+```
+SandboxedStrategy (a Strategy — engine/gate can't tell)
+    └─ StrategyExecutor (the seam)
+         └─ SubprocessExecutor ── JSON lines ──> python -s -P -m green.sandbox.runner
+                                                   1. steal real stdout (protocol fd),
+                                                      point sys.stdout at stderr
+                                                   2. read init (source/params/limits)
+                                                   3. setrlimit lockdown
+                                                   4. exec source, serve ticks
+```
 
-## Implementation seam
+Child lockdown is **kernel-level**, not monkeypatching: RLIMIT_CPU, RLIMIT_AS
+(best-effort on macOS), a file-size budget for the captured stderr,
+RLIMIT_NPROC=0, and the key trick — an **RLIMIT_NOFILE ceiling** at the highest
+open fd with every free slot below it plugged, so *any* new file or socket open
+fails with EMFILE. Modules a strategy legitimately needs (math, statistics,
+collections, itertools, green.core) are pre-imported before lockdown; anything
+else fails to import — contained, legibly.
 
-Expose a `StrategyExecutor` interface so the engine never hard-codes *how*
-`on_tick` runs:
+Parent-side enforcement: per-init and per-tick wall-clock deadlines
+(select-based reads), frame-size cap, max-orders-per-tick cap,
+`Order.model_validate` on everything the child returns, SIGKILL of the whole
+process group on timeout/violation, child stderr tail attached to crashes.
 
-- v1: **Docker** container per run (no net, read-only fs, resource caps).
-- Production-impressive path: **gVisor** or **Firecracker** microVMs, or a
-  managed runner (Modal/e2b). Implement when we go multi-user.
+## Invariants (do not weaken)
 
-For the Phase 1 skeleton the executor may run in-process (the boundary is just
-the `on_tick` call) — but the seam exists from the start so hardening is a swap,
-not a rewrite.
+- Determinism: child env is built from scratch (`PYTHONHASHSEED=0`, nothing
+  inherited); same source + params + bars ⇒ same orders.
+- Fidelity: a sandboxed run must be **bit-identical** to the native run (JSON
+  floats round-trip exactly). The flagship test runs the whole walk-forward
+  gate through `SandboxedStrategy` and asserts verdict equality — keep it.
+- `SandboxedStrategy` is **single-run**: the child accumulates history, so
+  reuse across runs would be a state leak. It refuses; the gate constructs a
+  fresh instance per run anyway.
+- Failures are typed and legible: `StrategyCrash` / `StrategyTimeout` /
+  `ProtocolViolation` (all `SandboxError`). Never let child garbage surface as
+  parent corruption.
+
+## Hardening path
+
+- v1 (now): `SubprocessExecutor` — process separation + rlimits.
+- Production wall: `DockerExecutor` speaking the **same protocol** over
+  `docker run -i --network=none` (read-only fs, hard memory cap). The seam
+  means this is a swap, not a rewrite.
+- Later, multi-user scale: gVisor / Firecracker microVMs or a managed runner.

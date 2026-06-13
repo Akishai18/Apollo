@@ -4,8 +4,8 @@
 > phases land, decisions change, or scope shifts. Per-layer contracts live in
 > each layer's `CLAUDE.md`; this doc is the roadmap, decisions, and status.
 
-**Last updated:** 2026-06-09
-**Current phase:** Phase 4 (API + sandbox) — sandbox done, API next
+**Last updated:** 2026-06-10
+**Current phase:** Phase 4 (API + sandbox) — sandbox + API + Docker done, Supabase next
 **Status legend:** `[x]` done · `[~]` in progress · `[ ]` not started
 
 ---
@@ -192,7 +192,7 @@ of train Sharpe 1.74"; each window chose a *different* lucky timing in-sample.
 **v1 caveat:** held-out runs start cold (indicator warm-up eats the first `lookback`
 bars of each test window) — size `test_size` above the largest lookback in the grid.
 
-### Phase 4 — API + sandbox `[~]` (sandbox done 2026-06-09)
+### Phase 4 — API + sandbox `[~]` (sandbox + API done 2026-06-10)
 **Goal:** callable and safe.
 - [x] Sandbox (`sandbox/` workspace member, depends on green-core only):
   - [x] `StrategyExecutor` seam — the engine/gate never know *how* `on_tick` runs
@@ -207,25 +207,40 @@ bars of each test window) — size `test_size` above the largest lookback in the
         `MarketView` grew `symbols()`/`fields()` so the bar can be enumerated
   - [x] Typed, legible failures: `StrategyCrash` (with child traceback + stderr
         tail), `StrategyTimeout`, `ProtocolViolation`
-- [ ] `DockerExecutor`: same protocol over `docker run -i --network=none`
-      (the production wall; subprocess+rlimits is the v1)
-- [ ] FastAPI: submit strategy + config, run, fetch results; WebSocket progress
-- [ ] Async job runner (parallel sweep windows)
+- [x] `DockerExecutor`: the same JSON protocol over `docker run -i --network=none
+      --read-only --cap-drop=ALL --security-opt=no-new-privileges --memory
+      --pids-limit` (+ `sandbox/Dockerfile`). Shares a `_PipeExecutor` base with
+      `SubprocessExecutor` so the two transports can't drift. The production wall.
+- [x] FastAPI (`api/` member): `POST /runs`, `GET /runs/{id}`, `WS /runs/{id}/ws`
+      (live per-window progress → verdict), `GET /healthz`. Untrusted source
+      *always* runs through `SandboxedStrategy` — no trusted in-process path.
+- [x] Async `JobRunner`: gate runs in a worker thread (`asyncio.to_thread`);
+      per-window progress bridged to the loop (`call_soon_threadsafe`) and fanned
+      out to WebSocket subscribers. Clean interface → swap in Dramatiq/RQ later.
+  - Note: windows still run sequentially inside the gate; parallel-sweep is the
+    next job-runner iteration (the sandbox concurrency test already pins that
+    parallel sandboxed runs stay isolated).
 - [ ] Supabase: Postgres schema (users, strategies, versions, runs, results),
       Auth/JWT verify, Storage, RLS
 
-**Proof (sandbox, done):** sandboxed runs are *bit-identical* to native (JSON
-floats round-trip exactly); the full walk-forward gate run through
-`SandboxedStrategy` reproduces the native verdict field-for-field; a probe
-strategy confirms the future never crosses the process boundary; file writes,
-network, and process spawning die with EMFILE at the kernel; infinite loops are
-killed; crashes surface with the strategy's own traceback. 16 sandbox tests.
+**Proof (done):** sandboxed runs are *bit-identical* to native (JSON floats
+round-trip exactly); the full walk-forward gate run through `SandboxedStrategy`
+reproduces the native verdict field-for-field; a probe confirms the future never
+crosses the process boundary; file/network/process-spawn die with EMFILE at the
+kernel; infinite loops killed; crashes surface with the strategy's own traceback.
+**API proven over real HTTP + WebSocket** (TestClient + a live uvicorn smoke):
+submit untrusted source → gate runs it sandboxed → stream progress → legible
+verdict; bad config and hostile strategies surface as clean run errors, never a
+500 or a hang. 65 tests green (18 sandbox + 7 API), 2 skipped (Linux-only memory
+cap; Docker daemon), ruff + pyright-strict clean.
 
-**v1 caveat:** RLIMIT_AS is not enforced on macOS (memory cap is best-effort
-until DockerExecutor); per-run subprocess spawn costs ~0.3s, acceptable for the
-gate, parallelized later by the job runner.
+**v1 caveats:** RLIMIT_AS is best-effort on macOS (hard memory wall arrives with
+`DockerExecutor`, daemon-gated test included); per-run subprocess spawn ~0.3s,
+fine for the gate, parallelized by a later job-runner iteration. Subprocess is a
+hostile-*strategy* wall, not an interpreter-0-day wall — that is what Docker (and
+later gVisor/Firecracker) provides.
 
-**Proof (remaining):** submit via API, stream progress, get verdict.
+**Proof (remaining):** Supabase persistence + per-user isolation (RLS).
 
 ### Phase 5 — Web `[ ]`
 **Goal:** show the differentiator.
@@ -295,6 +310,24 @@ value, multiple symbols, indicators up-to-now).
 ---
 
 ## 10. Update log
+
+- **2026-06-10** — **Phase 4 API + Docker — the core is callable and safe.**
+  New `api/` member (green-api): `POST /runs` submits untrusted strategy source +
+  config, `GET /runs/{id}` fetches state/progress/verdict, `WS /runs/{id}/ws`
+  streams queued → per-window progress → verdict, `GET /healthz`. Every strategy
+  the gate builds is sandboxed — there is no trusted in-process path in the API.
+  `JobRunner` runs the (sync, CPU-heavy, subprocess-spawning) gate in a worker
+  thread and bridges progress back to the loop; the gate grew an optional
+  `progress` hook (`WalkForwardProgress`) so core stays transport-agnostic.
+  Also landed `DockerExecutor` (+ `sandbox/Dockerfile`): the same JSON protocol
+  over a `--network=none --read-only --cap-drop=ALL --memory --pids-limit`
+  container, sharing a `_PipeExecutor` base with `SubprocessExecutor` so the two
+  can't drift. Two robustness gaps pinned: a Linux-only memory-bomb test and a
+  concurrent-sandbox isolation test. **Proven over real HTTP + WebSocket**
+  (TestClient + a live uvicorn smoke): submit source → sandboxed gate → streamed
+  progress → legible verdict; bad config + hostile strategy → clean run errors.
+  65 tests green (18 sandbox + 7 API), 2 skipped (Linux memory cap; Docker
+  daemon), ruff + pyright-strict clean. Next: Supabase (persistence, JWT, RLS).
 
 - **2026-06-09** — **Phase 4 sandbox shipped — the third differentiator.** New
   `sandbox/` workspace member (depends on green-core only). Untrusted strategy

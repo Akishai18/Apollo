@@ -62,8 +62,14 @@ process group on timeout/violation, child stderr tail attached to crashes.
 
 ## Hardening path
 
-- v1 (now): `SubprocessExecutor` — process separation + rlimits.
-- Production wall: `DockerExecutor` speaking the **same protocol** over
-  `docker run -i --network=none` (read-only fs, hard memory cap). The seam
-  means this is a swap, not a rewrite.
+- v1: `SubprocessExecutor` — process separation + rlimits. A hostile-*strategy*
+  wall (good against misbehaving/adversarial strategy code).
+- Production wall: `DockerExecutor` (built) speaks the **same protocol** over
+  `docker run -i --network=none --read-only --cap-drop=ALL
+  --security-opt=no-new-privileges --memory --pids-limit` (see `sandbox/Dockerfile`;
+  build from the repo root). Both share the `_PipeExecutor` base, so the
+  transports can't drift; the runner's setrlimit lockdown still applies inside
+  the container (defense in depth). This is the wall against an interpreter
+  0-day, not just a hostile strategy. Daemon-gated tests cover it; CI/macOS
+  without a daemon skip them.
 - Later, multi-user scale: gVisor / Firecracker microVMs or a managed runner.

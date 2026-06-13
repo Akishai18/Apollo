@@ -1,19 +1,25 @@
 """The trusted side of the sandbox.
 
-`SubprocessExecutor` owns a locked-down child process (see runner.py) and speaks
-a JSON-line protocol with it — never pickle, which would hand untrusted bytes a
-code path back into this process. `SandboxedStrategy` wraps an executor in the
-`Strategy` contract so the engine and the overfit gate run sandboxed code
-without knowing it: same loop, same gate, the strategy just lives elsewhere.
+An executor owns a locked-down child process running the strategy (see
+runner.py) and speaks a JSON-line protocol with it — never pickle, which would
+hand untrusted bytes a code path back into this process. `SandboxedStrategy`
+wraps an executor in the `Strategy` contract so the engine and the overfit gate
+run sandboxed code without knowing it: same loop, same gate, the strategy just
+lives elsewhere.
 
 Why this completes the lookahead guarantee: the parent forwards exactly one bar
 per tick — the view's present, enumerated through the same `MarketView` that is
 already physically sliced. Future data never crosses the process boundary, so
 even adversarial code has nothing to inspect.
 
-The executor seam is the path to production isolation: `DockerExecutor` later
-speaks this exact protocol over `docker run -i --network=none` and nothing else
-changes.
+The protocol is the seam. `_PipeExecutor` owns it; subclasses differ only in how
+they *launch* and *kill* the child:
+
+- `SubprocessExecutor` — a locked-down child process (rlimits). The robust v1.
+- `DockerExecutor` — the same protocol over `docker run -i --network=none`
+  (read-only fs, hard memory cap, dropped capabilities). The production wall.
+
+Because both speak the identical protocol, hardening is a swap, not a rewrite.
 """
 
 from __future__ import annotations
@@ -27,9 +33,10 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 import weakref
 from abc import ABC, abstractmethod
-from typing import Any, NoReturn, cast
+from typing import IO, Any, NoReturn, cast
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
@@ -44,7 +51,7 @@ class SandboxLimits(BaseModel):
     init_seconds: float = 10.0  # budget to exec source + construct the strategy
     tick_seconds: float = 1.0  # wall-clock budget per on_tick
     cpu_seconds: int = 30  # kernel CPU budget for the whole run (RLIMIT_CPU)
-    memory_bytes: int = 512 * 1024 * 1024  # RLIMIT_AS
+    memory_bytes: int = 512 * 1024 * 1024  # RLIMIT_AS / container --memory
     max_orders_per_tick: int = 100
     max_line_bytes: int = 1_000_000  # protocol frame size cap
 
@@ -79,7 +86,14 @@ class StrategyExecutor(ABC):
     def close(self) -> None: ...
 
 
-class SubprocessExecutor(StrategyExecutor):
+class _PipeExecutor(StrategyExecutor):
+    """All the JSON-line protocol machinery, shared by every concrete executor.
+
+    Subclasses implement only `_spawn` (how the child is launched) and
+    `_force_kill` (how it is hard-killed). Everything else — framing, deadlines,
+    order validation, legible typed failures — lives here so the two transports
+    cannot drift apart."""
+
     def __init__(self, limits: SandboxLimits | None = None) -> None:
         self.limits = limits or SandboxLimits()
         self._proc: subprocess.Popen[bytes] | None = None
@@ -87,44 +101,55 @@ class SubprocessExecutor(StrategyExecutor):
         self._stderr_path = ""
         self._buffer = b""
 
+    # ----------------------------------------------------------- subclass API
+
+    @abstractmethod
+    def _spawn(self, stderr_file: IO[bytes]) -> subprocess.Popen[bytes]:
+        """Launch the child with stdin/stdout pipes and stderr to `stderr_file`."""
+        ...
+
+    @abstractmethod
+    def _force_kill(self, proc: subprocess.Popen[bytes]) -> None:
+        """Hard-kill the child (and anything it spawned) and reap it."""
+        ...
+
+    # ------------------------------------------------------------- lifecycle
+
     def start(self, source: str, class_name: str | None, params: dict[str, Any]) -> None:
         if self._proc is not None:
             raise SandboxError("executor already started")
+        # The protocol failure paths (_crash/_violation/_timeout) clean up before
+        # they raise; this guard catches the *other* failures — a Popen that
+        # won't launch, set_blocking, etc. — so a half-started child or its temp
+        # dir is never orphaned. close() is idempotent, so double-cleanup is safe.
+        try:
+            self._workdir = tempfile.TemporaryDirectory(prefix="green-sandbox-")
+            self._stderr_path = os.path.join(self._workdir.name, "stderr.log")
+            with open(self._stderr_path, "wb") as stderr_file:
+                self._proc = self._spawn(stderr_file)
+            os.set_blocking(self._stdout_fd(), False)
 
-        self._workdir = tempfile.TemporaryDirectory(prefix="green-sandbox-")
-        stderr_path = os.path.join(self._workdir.name, "stderr.log")
-        with open(stderr_path, "wb") as stderr_file:
-            # -s/-P: no user site-packages, no cwd on sys.path. The env is built
-            # from scratch (nothing inherited); the hash seed is pinned so the
-            # child is deterministic. New session => one killpg reaps everything.
-            self._proc = subprocess.Popen(
-                [sys.executable, "-s", "-P", "-m", "green.sandbox.runner"],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=stderr_file,
-                cwd=self._workdir.name,
-                env={"PYTHONHASHSEED": "0"},
-                start_new_session=True,
+            self._send(
+                {
+                    "type": "init",
+                    "source": source,
+                    "class_name": class_name,
+                    "params": params,
+                    "limits": self.limits.model_dump(),
+                }
             )
-        self._stderr_path = stderr_path
-        os.set_blocking(self._stdout_fd(), False)
-
-        self._send(
-            {
-                "type": "init",
-                "source": source,
-                "class_name": class_name,
-                "params": params,
-                "limits": self.limits.model_dump(),
-            }
-        )
-        message = self._read_message(
-            time.monotonic() + self.limits.init_seconds, what="strategy init"
-        )
-        if message.get("type") == "error":
-            self._crash(f"strategy failed to initialize:\n{message.get('message', '')}")
-        if message.get("type") != "ready":
-            self._violation(f"expected ready frame, got {message.get('type')!r}")
+            message = self._read_message(
+                time.monotonic() + self.limits.init_seconds, what="strategy init"
+            )
+            if message.get("type") == "error":
+                self._crash(f"strategy failed to initialize:\n{message.get('message', '')}")
+            if message.get("type") != "ready":
+                self._violation(f"expected ready frame, got {message.get('type')!r}")
+        except SandboxError:
+            raise  # already cleaned up by _crash/_violation/_timeout
+        except BaseException:
+            self.close()
+            raise
 
     def tick(self, now: int, bar: dict[str, dict[str, float]]) -> list[Order]:
         if self._proc is None:
@@ -161,7 +186,7 @@ class SubprocessExecutor(StrategyExecutor):
                     proc.stdin.flush()
                     proc.wait(timeout=1.0)
                 except (OSError, subprocess.TimeoutExpired):
-                    self._kill_group(proc)
+                    self._force_kill(proc)
             if proc.stdin is not None:
                 proc.stdin.close()
             if proc.stdout is not None:
@@ -217,15 +242,10 @@ class SubprocessExecutor(StrategyExecutor):
 
     # ----------------------------------------------------------------- death
 
-    def _kill_group(self, proc: subprocess.Popen[bytes]) -> None:
-        with contextlib.suppress(ProcessLookupError):
-            os.killpg(proc.pid, signal.SIGKILL)  # pgid == pid (new session)
-        proc.wait()
-
     def _kill_then_close(self) -> None:
-        """For hostile/hung children: no graceful end frame, SIGKILL first."""
+        """For hostile/hung children: no graceful end frame, hard-kill first."""
         if self._proc is not None:
-            self._kill_group(self._proc)
+            self._force_kill(self._proc)
         self.close()
 
     def _stderr_tail(self, max_bytes: int = 2000) -> str:
@@ -249,6 +269,126 @@ class SubprocessExecutor(StrategyExecutor):
     def _violation(self, message: str) -> NoReturn:
         self._kill_then_close()
         raise ProtocolViolation(message)
+
+
+class SubprocessExecutor(_PipeExecutor):
+    """v1: the strategy runs in a separate Python process locked down with
+    setrlimit (see runner.py). Robust against a hostile *strategy*; the hard
+    container wall is `DockerExecutor`."""
+
+    def _spawn(self, stderr_file: IO[bytes]) -> subprocess.Popen[bytes]:
+        assert self._workdir is not None
+        # -s/-P: no user site-packages, no cwd on sys.path. The env is built from
+        # scratch (nothing inherited); the hash seed is pinned so the child is
+        # deterministic. New session => one killpg reaps the whole group.
+        return subprocess.Popen(
+            [sys.executable, "-s", "-P", "-m", "green.sandbox.runner"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=stderr_file,
+            cwd=self._workdir.name,
+            env={"PYTHONHASHSEED": "0"},
+            start_new_session=True,
+        )
+
+    def _force_kill(self, proc: subprocess.Popen[bytes]) -> None:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(proc.pid, signal.SIGKILL)  # pgid == pid (new session)
+        proc.wait()
+
+
+class DockerExecutor(_PipeExecutor):
+    """The production wall: the strategy runs inside a container with no network,
+    a read-only root filesystem, a hard memory cap, dropped capabilities, and a
+    PID limit. Same JSON protocol over the container's stdin/stdout — the rest of
+    the system cannot tell the difference (sandboxed runs stay bit-identical).
+
+    The runner's own setrlimit lockdown still applies inside the container:
+    defense in depth, container walls plus kernel rlimits.
+    """
+
+    def __init__(
+        self,
+        limits: SandboxLimits | None = None,
+        *,
+        image: str = "green-sandbox:latest",
+        docker_bin: str = "docker",
+        cpus: float = 1.0,
+        pids_limit: int = 64,
+    ) -> None:
+        super().__init__(limits)
+        self.image = image
+        self.docker_bin = docker_bin
+        self.cpus = cpus
+        self.pids_limit = pids_limit
+        self._container = ""
+
+    @classmethod
+    def is_available(cls, docker_bin: str = "docker") -> bool:
+        """True if a Docker daemon is reachable — tests gate on this."""
+        try:
+            result = subprocess.run(
+                [docker_bin, "info"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return result.returncode == 0
+
+    def _build_command(self, container: str) -> list[str]:
+        """The hardened `docker run` invocation — the wall this executor promises.
+        Extracted so it is assertable without a daemon."""
+        memory = str(self.limits.memory_bytes)
+        return [
+            self.docker_bin,
+            "run",
+            "--rm",
+            "-i",
+            "--name",
+            container,
+            "--network=none",  # no network namespace at all
+            "--read-only",  # immutable root filesystem
+            "--cap-drop=ALL",  # no Linux capabilities
+            "--security-opt=no-new-privileges",
+            f"--memory={memory}",
+            f"--memory-swap={memory}",  # == memory => swap disabled, hard cap
+            f"--cpus={self.cpus}",
+            f"--pids-limit={self.pids_limit}",
+            self.image,
+            "python",
+            "-s",
+            "-P",
+            "-m",
+            "green.sandbox.runner",
+        ]
+
+    def _spawn(self, stderr_file: IO[bytes]) -> subprocess.Popen[bytes]:
+        self._container = f"green-sandbox-{uuid.uuid4().hex}"
+        # The docker *client* inherits the host env (DOCKER_HOST etc.); isolation
+        # is the container, not the client process.
+        return subprocess.Popen(
+            self._build_command(self._container),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=stderr_file,
+        )
+
+    def _force_kill(self, proc: subprocess.Popen[bytes]) -> None:
+        # Killing the `docker run` client does not stop the container — name it
+        # and `docker kill` it. --rm then reaps it.
+        with contextlib.suppress(OSError, subprocess.SubprocessError):
+            subprocess.run(
+                [self.docker_bin, "kill", self._container],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+                check=False,
+            )
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            proc.wait(timeout=10)
 
 
 class SandboxedStrategy(Strategy):

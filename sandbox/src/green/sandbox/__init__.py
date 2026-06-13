@@ -7,6 +7,7 @@ code — `SandboxedStrategy` is just a `Strategy`.
 """
 
 from green.sandbox.executor import (
+    DockerExecutor,
     ProtocolViolation,
     SandboxedStrategy,
     SandboxError,
@@ -18,6 +19,7 @@ from green.sandbox.executor import (
 )
 
 __all__ = [
+    "DockerExecutor",
     "ProtocolViolation",
     "SandboxError",
     "SandboxLimits",

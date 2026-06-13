@@ -15,7 +15,9 @@
 from __future__ import annotations
 
 import inspect
+import sys
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import pytest
@@ -35,6 +37,7 @@ from green.core import (
     run_walk_forward,
 )
 from green.sandbox import (
+    DockerExecutor,
     ProtocolViolation,
     SandboxedStrategy,
     SandboxError,
@@ -339,3 +342,96 @@ NotAStrategy = object
 """
     with pytest.raises(StrategyCrash, match="not a Strategy subclass"):
         SandboxedStrategy({}, source=source, class_name="NotAStrategy")
+
+
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason="RLIMIT_AS is only enforced on Linux; on macOS the memory wall is the "
+    "wall-clock until DockerExecutor. This test pins the Linux behaviour.",
+)
+def test_memory_bomb_is_killed_by_the_address_space_limit() -> None:
+    """On Linux the hard memory cap (RLIMIT_AS) must stop an allocation bomb
+    *before* the generous wall-clock deadline — i.e. the kernel kills it, not
+    the timeout. We give a long tick budget so a timeout would be the wrong
+    (but still-contained) outcome to distinguish the two."""
+    source = """
+from green.core import Strategy
+
+class Bomb(Strategy):
+    def on_tick(self, view):
+        blob = []
+        while True:
+            blob.append(bytearray(8_000_000))
+        return []
+"""
+    with pytest.raises(StrategyCrash):  # MemoryError surfaces as a crash, not a timeout
+        _run_hostile(source, n_steps=3, tick_seconds=30.0, memory_bytes=256 * 1024 * 1024)
+
+
+# --------------------------------------------------- 4. the Docker hard wall
+
+
+def test_docker_executor_constructs_the_expected_hardened_command() -> None:
+    """We can't assume a daemon in CI, but we can assert the wall is configured:
+    no network, read-only fs, dropped caps, a hard memory cap, and a PID limit.
+    The command is the contract DockerExecutor promises."""
+    mem = 256 * 1024 * 1024
+    executor = DockerExecutor(SandboxLimits(memory_bytes=mem), image="green-sandbox:test", cpus=2.0)
+    cmd = executor._build_command("green-sandbox-fixed")  # pyright: ignore[reportPrivateUsage]
+
+    assert cmd[:3] == ["docker", "run", "--rm"]
+    assert "--network=none" in cmd
+    assert "--read-only" in cmd
+    assert "--cap-drop=ALL" in cmd
+    assert "--security-opt=no-new-privileges" in cmd
+    assert f"--memory={mem}" in cmd
+    assert f"--memory-swap={mem}" in cmd  # swap disabled => hard cap
+    assert "--cpus=2.0" in cmd
+    assert "--pids-limit=64" in cmd
+    assert "green-sandbox:test" in cmd
+    assert cmd[-5:] == ["python", "-s", "-P", "-m", "green.sandbox.runner"]
+
+
+@pytest.mark.skipif(
+    not DockerExecutor.is_available(),
+    reason="no reachable Docker daemon; build the image with "
+    "`docker build -f sandbox/Dockerfile -t green-sandbox:latest .` and run with a daemon",
+)
+def test_docker_executor_runs_bit_identical_to_native() -> None:
+    """When a daemon + image are present, the container wall is invisible: the
+    same parity guarantee as the subprocess executor."""
+    adapter, dataset = _toy()
+    params = {"symbol": "SYN", "quantity": 10}
+
+    native = run(BuyAndHold(dict(params)), adapter, dataset)
+    strategy = SandboxedStrategy(
+        dict(params), source=BUY_AND_HOLD_SOURCE, executor=DockerExecutor()
+    )
+    sandboxed = run(strategy, adapter, dataset)
+    strategy.close()
+
+    assert sandboxed.fills == native.fills
+    assert sandboxed.equity_curve == native.equity_curve
+
+
+# ------------------------------------------------------- 5. parallel-safety
+
+
+def test_concurrent_sandboxes_stay_isolated_and_correct() -> None:
+    """Each SandboxedStrategy owns its own process; running several at once (as
+    the async job runner will) must not cross-contaminate. Each gets a distinct
+    quantity and must produce exactly its own fills."""
+    adapter, dataset = _toy(n_steps=40)
+
+    def run_one(quantity: int) -> list[float]:
+        strategy = _sandboxed({"symbol": "SYN", "quantity": quantity}, BUY_AND_HOLD_SOURCE)
+        result = run(strategy, adapter, dataset)
+        strategy.close()
+        return [fill.quantity for fill in result.fills]
+
+    quantities = [1, 2, 3, 4, 5, 6, 7, 8]
+    with ThreadPoolExecutor(max_workers=len(quantities)) as pool:
+        results = list(pool.map(run_one, quantities))
+
+    # Each run bought exactly its own quantity, once — no bleed between processes.
+    assert results == [[float(q)] for q in quantities]

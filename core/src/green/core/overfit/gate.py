@@ -68,6 +68,20 @@ class Verdict(BaseModel):
     windows: tuple[WindowResult, ...]  # the evidence
 
 
+class WalkForwardProgress(BaseModel):
+    """Emitted after each window finishes. Transport-agnostic on purpose: core
+    knows nothing about WebSockets — a caller (the API) turns these into frames."""
+
+    model_config = ConfigDict(frozen=True)
+
+    completed: int  # windows finished so far (1-based)
+    total: int  # total windows in this run
+    window: WindowResult  # the just-finished window's full evidence
+
+
+type ProgressHook = Callable[[WalkForwardProgress], None]
+
+
 def _score(metrics: Metrics, select_by: SelectBy) -> float:
     return metrics.sharpe if select_by == "sharpe" else metrics.total_return
 
@@ -85,12 +99,14 @@ def run_walk_forward(
     select_by: SelectBy = "sharpe",
     min_retention: float = 0.5,
     min_oos_trades: int = 2,
+    progress: ProgressHook | None = None,
 ) -> Verdict:
     windows = make_windows(dataset.length, train_size=train_size, test_size=test_size, step=step)
     if not windows:
         raise ValueError("dataset too short for the requested train/test windows")
     spec = adapter.metrics_spec()
     combos = expand_grid(grid)
+    total = len(windows)
 
     results: list[WindowResult] = []
     for window in windows:
@@ -120,20 +136,21 @@ def run_walk_forward(
         held_out = run(
             strategy_factory(dict(best.params)), adapter, test_data, starting_cash=starting_cash
         )
-        results.append(
-            WindowResult(
-                window=window,
-                chosen_params=best.params,
-                train=best.train,
-                test=compute_metrics(
-                    held_out.equity_curve,
-                    held_out.fills,
-                    starting_cash=starting_cash,
-                    periods_per_year=spec.periods_per_year,
-                ),
-                sweep=tuple(sweep),
-            )
+        window_result = WindowResult(
+            window=window,
+            chosen_params=best.params,
+            train=best.train,
+            test=compute_metrics(
+                held_out.equity_curve,
+                held_out.fills,
+                starting_cash=starting_cash,
+                periods_per_year=spec.periods_per_year,
+            ),
+            sweep=tuple(sweep),
         )
+        results.append(window_result)
+        if progress is not None:
+            progress(WalkForwardProgress(completed=len(results), total=total, window=window_result))
 
     train_sharpe = mean(result.train.sharpe for result in results)
     test_sharpe = mean(result.test.sharpe for result in results)

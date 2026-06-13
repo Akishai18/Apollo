@@ -14,6 +14,7 @@ from green.core.models import Fill, Order, OrderType, Side
 from green.core.overfit import (
     SweepPoint,
     Verdict,
+    WalkForwardProgress,
     Window,
     WindowResult,
     expand_grid,
@@ -44,6 +45,7 @@ __all__ = [
     "SweepPoint",
     "Trade",
     "Verdict",
+    "WalkForwardProgress",
     "Window",
     "WindowResult",
     "compute_metrics",

@@ -13,7 +13,7 @@ from green.adapters import ToyAdapter
 from green.core import Order, Side, Strategy, run_walk_forward
 from green.core.dataset import Dataset
 from green.core.marketview import MarketView
-from green.core.overfit import expand_grid, make_windows
+from green.core.overfit import WalkForwardProgress, expand_grid, make_windows
 from green.strategies import MeanReversion
 
 
@@ -121,3 +121,21 @@ def test_curve_fit_strategy_is_rejected_with_legible_reason() -> None:
     for window_result in verdict.windows:
         assert len(window_result.sweep) == 18  # 9 buy_t x 2 hold
         assert window_result.chosen_params in [point.params for point in window_result.sweep]
+
+
+def test_progress_hook_fires_once_per_window_in_order() -> None:
+    adapter, dataset = _ou_dataset()
+    seen: list[WalkForwardProgress] = []
+    verdict = run_walk_forward(
+        MeanReversion,
+        adapter,
+        dataset,
+        {"symbol": ["SYN"], "lookback": [10, 20], "quantity": [10]},
+        train_size=200,
+        test_size=100,
+        progress=seen.append,
+    )
+    # One event per window, monotonic and total-consistent, carrying the window.
+    assert [p.completed for p in seen] == [1, 2, 3, 4]
+    assert all(p.total == 4 for p in seen)
+    assert [p.window for p in seen] == list(verdict.windows)

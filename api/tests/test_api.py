@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import Any, cast
 
 import httpx
@@ -17,7 +17,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import green.strategies.mean_reversion
-from green.api import AdapterSpec, RunRequest, create_app
+from green.api import AdapterSpec, InMemoryRunStore, RunRequest, Settings, create_app
 from green.api.jobs import JobRunner
 
 MEAN_REVERSION_SOURCE = inspect.getsource(green.strategies.mean_reversion)
@@ -45,14 +45,24 @@ def _json(response: httpx.Response) -> dict[str, Any]:
     return cast("dict[str, Any]", response.json())
 
 
-def _post(client: httpx.Client, path: str, payload: dict[str, Any]) -> httpx.Response:
+def _json_list(response: httpx.Response) -> list[dict[str, Any]]:
+    return cast("list[dict[str, Any]]", response.json())
+
+
+def _headers(token: str | None) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+
+def _post(
+    client: httpx.Client, path: str, payload: dict[str, Any], token: str | None = None
+) -> httpx.Response:
     # Typed as httpx.Client (TestClient's base) so pyright sees the typed method
     # signatures rather than Starlette's untyped overrides.
-    return client.post(path, json=payload)
+    return client.post(path, json=payload, headers=_headers(token))
 
 
-def _get(client: httpx.Client, path: str) -> httpx.Response:
-    return client.get(path)
+def _get(client: httpx.Client, path: str, token: str | None = None) -> httpx.Response:
+    return client.get(path, headers=_headers(token))
 
 
 def _wait_for_terminal(client: TestClient, run_id: str, timeout: float = 30.0) -> dict[str, Any]:
@@ -165,9 +175,10 @@ def test_early_websocket_disconnect_drops_the_subscriber() -> None:
         assert _wait_for_terminal(client, run_id)["state"] == "completed"
 
 
-def test_job_store_is_bounded_and_evicts_oldest_finished_runs() -> None:
-    """The in-memory store must not grow without bound. Oldest *finished* runs
-    are evicted once over capacity; the newest survive."""
+def test_live_job_map_is_bounded_but_the_store_keeps_everything() -> None:
+    """The live in-memory job map must not grow without bound — oldest *finished*
+    runs are evicted from it. The durable store retains them all (eviction only
+    bounds the streaming machinery, never the source of truth)."""
 
     bad = RunRequest(
         source="x",
@@ -179,12 +190,54 @@ def test_job_store_is_bounded_and_evicts_oldest_finished_runs() -> None:
     )
 
     async def scenario() -> tuple[JobRunner, list[str]]:
-        runner = JobRunner(max_jobs=5)
-        ids = [runner.submit(bad) for _ in range(12)]
+        runner = JobRunner(InMemoryRunStore(), max_jobs=5)
+        ids = [runner.submit("u", bad) for _ in range(12)]
         await asyncio.gather(*list(runner._tasks), return_exceptions=True)  # pyright: ignore[reportPrivateUsage]
         return runner, ids
 
     runner, ids = asyncio.run(scenario())
-    assert len(runner._jobs) <= 5  # pyright: ignore[reportPrivateUsage]
-    assert runner.get(ids[0]) is None  # oldest evicted
-    assert runner.get(ids[-1]) is not None  # newest retained
+    assert len(runner._jobs) <= 5  # pyright: ignore[reportPrivateUsage]  # live map bounded
+    assert ids[0] not in runner._jobs  # pyright: ignore[reportPrivateUsage]  # oldest evicted from live map
+    assert runner.get(ids[0], "u") is not None  # ...but still durable in the store
+    assert runner.get(ids[-1], "u") is not None
+
+
+def test_auth_required_and_runs_are_isolated_per_user(user_token: Callable[..., str]) -> None:
+    """With a JWT secret configured: no token → 401; a run is visible only to the
+    user who submitted it (cross-user fetch is 404, never a leak); lists are scoped."""
+    secret = "test-secret"
+    token_a = user_token("user-a", secret)
+    token_b = user_token("user-b", secret)
+    with TestClient(create_app(Settings(jwt_secret=secret))) as client:
+        assert _post(client, "/runs", _BASE_REQUEST).status_code == 401  # no token
+        assert _get(client, "/runs").status_code == 401
+
+        run_id = cast("str", _json(_post(client, "/runs", _BASE_REQUEST, token=token_a))["id"])
+
+        # B cannot see A's run; A can. 404 (not 403) so existence never leaks.
+        assert _get(client, f"/runs/{run_id}", token=token_b).status_code == 404
+        assert _get(client, f"/runs/{run_id}", token=token_a).status_code == 200
+
+        # Listing is scoped to the caller.
+        assert [r["id"] for r in _json_list(_get(client, "/runs", token=token_a))] == [run_id]
+        assert _json_list(_get(client, "/runs", token=token_b)) == []
+
+        # The run still completes for its owner.
+        deadline = time.monotonic() + 30.0
+        while time.monotonic() < deadline:
+            if _json(_get(client, f"/runs/{run_id}", token=token_a))["state"] in (
+                "completed",
+                "error",
+            ):
+                break
+            time.sleep(0.05)
+
+
+def test_websocket_rejects_a_bad_token_when_auth_is_on(user_token: Callable[..., str]) -> None:
+    with TestClient(create_app(Settings(jwt_secret="s"))) as client:
+        token = user_token("user-a", "s")
+        run_id = cast("str", _json(_post(client, "/runs", _BASE_REQUEST, token=token))["id"])
+        # A garbage token on the WS query param is refused before streaming.
+        with client.websocket_connect(f"/runs/{run_id}/ws?token=not-a-jwt") as ws:
+            msg = cast("dict[str, Any]", ws.receive_json())
+            assert "detail" in msg

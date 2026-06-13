@@ -4,8 +4,8 @@
 > phases land, decisions change, or scope shifts. Per-layer contracts live in
 > each layer's `CLAUDE.md`; this doc is the roadmap, decisions, and status.
 
-**Last updated:** 2026-06-10
-**Current phase:** Phase 4 (API + sandbox) — sandbox + API + Docker done, Supabase next
+**Last updated:** 2026-06-11
+**Current phase:** Phase 4 (API + sandbox) — **done**; Phase 5 (Web) next
 **Status legend:** `[x]` done · `[~]` in progress · `[ ]` not started
 
 ---
@@ -192,7 +192,7 @@ of train Sharpe 1.74"; each window chose a *different* lucky timing in-sample.
 **v1 caveat:** held-out runs start cold (indicator warm-up eats the first `lookback`
 bars of each test window) — size `test_size` above the largest lookback in the grid.
 
-### Phase 4 — API + sandbox `[~]` (sandbox + API done 2026-06-10)
+### Phase 4 — API + sandbox `[x]` done (2026-06-11)
 **Goal:** callable and safe.
 - [x] Sandbox (`sandbox/` workspace member, depends on green-core only):
   - [x] `StrategyExecutor` seam — the engine/gate never know *how* `on_tick` runs
@@ -217,11 +217,29 @@ bars of each test window) — size `test_size` above the largest lookback in the
 - [x] Async `JobRunner`: gate runs in a worker thread (`asyncio.to_thread`);
       per-window progress bridged to the loop (`call_soon_threadsafe`) and fanned
       out to WebSocket subscribers. Clean interface → swap in Dramatiq/RQ later.
-  - Note: windows still run sequentially inside the gate; parallel-sweep is the
-    next job-runner iteration (the sandbox concurrency test already pins that
-    parallel sandboxed runs stay isolated).
-- [ ] Supabase: Postgres schema (users, strategies, versions, runs, results),
-      Auth/JWT verify, Storage, RLS
+- [x] Auth: Supabase JWT verification (`auth.py`, HS256, algorithm pinned from
+      our side — closes alg-confusion/`alg:none`). Disabled when no secret is
+      configured (offline dev/tests run as a fixed user); set `GREEN_JWT_SECRET`
+      to require + verify real bearer tokens. WS accepts the token via `?token=`.
+- [x] Persistence behind a `RunStore` interface (`store.py`): `InMemoryRunStore`
+      (default) + `SqliteRunStore` (durable, tested incl. survive-restart). Runs
+      are owned by the submitting user; every read is ownership-scoped (cross-user
+      fetch is 404, never a leak). `GET /runs` lists the caller's runs.
+- [x] Supabase Postgres schema + **RLS** as the deployment artifact
+      (`api/migrations/0001_init.sql`): `runs` table, RLS policies scoping every
+      row to `auth.uid()`. Same `RunStore` interface in prod (a Postgres DSN) —
+      the SubprocessExecutor→DockerExecutor pattern again (tested backend now,
+      managed backend swapped in for prod). Isolation enforced twice: app layer +
+      DB RLS.
+- **Deferred, with rationale** (not needed for the "persistence + RLS" proof):
+  - Supabase **Storage / Parquet artifacts** — the verdict (incl. full sweep /
+    heatmap data) is already persisted as JSON in the run row, so all current
+    data is durable. Blob artifacts (equity curves) become worthwhile when the
+    gate exposes per-run curves and the web needs to stream them → lands with
+    Phase 5 visuals.
+  - **Parallel sweep** — a performance optimization, not correctness. Windows
+    still run sequentially; the concurrency-isolation test already proves parallel
+    sandboxed runs are safe, so this is later wiring, not a blocker.
 
 **Proof (done):** sandboxed runs are *bit-identical* to native (JSON floats
 round-trip exactly); the full walk-forward gate run through `SandboxedStrategy`
@@ -234,13 +252,28 @@ verdict; bad config and hostile strategies surface as clean run errors, never a
 500 or a hang. 65 tests green (18 sandbox + 7 API), 2 skipped (Linux-only memory
 cap; Docker daemon), ruff + pyright-strict clean.
 
+**Proof (persistence + auth, done):** durability verified over a live uvicorn —
+submit a run, restart the server (same SQLite file), the completed run + verdict
+are still there and still listed for the owner; requests without a token get 401;
+a second user gets 404 for someone else's run. Backend unit-tested on both
+InMemory and SQLite (round-trip, update, per-user isolation, survive-reopen); JWT
+verification unit-tested (valid, wrong-secret, alg-confusion, expiry, nbf,
+audience, missing-sub, malformed). **84 tests green, 2 skipped** (Linux memory
+cap; Docker daemon), ruff + pyright-strict clean.
+
 **v1 caveats:** RLIMIT_AS is best-effort on macOS (hard memory wall arrives with
 `DockerExecutor`, daemon-gated test included); per-run subprocess spawn ~0.3s,
 fine for the gate, parallelized by a later job-runner iteration. Subprocess is a
 hostile-*strategy* wall, not an interpreter-0-day wall — that is what Docker (and
-later gVisor/Firecracker) provides.
+later gVisor/Firecracker) provides. **Postgres RLS is validated by the user
+against a real Supabase project** (the migration is the artifact; SQLite proves
+the store logic + app-level isolation offline).
 
-**Proof (remaining):** Supabase persistence + per-user isolation (RLS).
+**To activate Supabase (deployment, not core code):** create a project; run
+`api/migrations/0001_init.sql`; set `GREEN_JWT_SECRET` to the project's JWT
+secret. The one remaining code stub for hosted deployment is a `PostgresRunStore`
+(same `RunStore` interface, psycopg) selected by a new `GREEN_STORE=postgres` +
+`DATABASE_URL` — straightforward, but unverifiable here without a live database.
 
 ### Phase 5 — Web `[ ]`
 **Goal:** show the differentiator.
@@ -311,6 +344,25 @@ value, multiple symbols, indicators up-to-now).
 
 ## 10. Update log
 
+- **2026-06-11** — **Phase 4 complete — persistence + auth + per-user isolation.**
+  Auth (`auth.py`): Supabase JWT verification, HS256 with the algorithm pinned
+  from our side (closes alg-confusion / `alg:none`); off when no secret is set so
+  the offline suite + local dev run as a fixed user. Persistence behind a
+  `RunStore` interface (`store.py`): `InMemoryRunStore` + durable `SqliteRunStore`;
+  runs owned by the submitter, every read ownership-scoped (cross-user = 404).
+  New `GET /runs` lists the caller's runs; the `JobRunner` mirrors every lifecycle
+  transition into the store (live `_Job` is now just streaming machinery). The
+  Supabase deployment artifact is `api/migrations/0001_init.sql` — `runs` table +
+  RLS policies scoping rows to `auth.uid()` (isolation enforced twice: app layer
+  + DB). **Durability proven on a live uvicorn**: submit → restart server (same
+  SQLite file) → completed run + verdict still present and still listed; 401
+  without a token; 404 across users. Deferred with rationale: Supabase Storage /
+  Parquet artifacts (verdict + sweep already persisted as JSON; blob artifacts
+  land with Phase 5 visuals) and parallel sweep (perf, not correctness). 84 tests
+  green (incl. 8 auth + 5 store + multi-user HTTP isolation), 2 skipped, ruff +
+  pyright-strict clean. Remaining for hosted deploy (user-side): create a Supabase
+  project, run the migration, set `GREEN_JWT_SECRET`; add a `PostgresRunStore`
+  stub. **Next: Phase 5 (Web).**
 - **2026-06-10** — **Phase 4 API + Docker — the core is callable and safe.**
   New `api/` member (green-api): `POST /runs` submits untrusted strategy source +
   config, `GET /runs/{id}` fetches state/progress/verdict, `WS /runs/{id}/ws`

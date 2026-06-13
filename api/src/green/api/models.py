@@ -63,3 +63,20 @@ class RunResponse(BaseModel):
     progress: ProgressInfo | None = None
     verdict: Verdict | None = None
     error: str | None = None
+
+
+class RunSummary(BaseModel):
+    """A lightweight row for list views — no full verdict (which now carries
+    per-window sweep grids and equity curves and can be large). The detail view
+    (`GET /runs/{id}`) returns the full `RunResponse`."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    state: RunState
+    passed: bool | None = None  # from the verdict, when completed
+    reason: str | None = None  # the legible one-liner, when completed
+    progress: ProgressInfo | None = None
+    error: str | None = None
+    created_at: str = ""
+    updated_at: str = ""

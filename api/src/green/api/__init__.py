@@ -16,6 +16,7 @@ from green.api.models import (
     RunRequest,
     RunResponse,
     RunState,
+    RunSummary,
 )
 from green.api.settings import Settings
 from green.api.store import InMemoryRunStore, RunStore, SqliteRunStore, StoredRun, build_store
@@ -31,6 +32,7 @@ __all__ = [
     "RunResponse",
     "RunState",
     "RunStore",
+    "RunSummary",
     "Settings",
     "SqliteRunStore",
     "StoredRun",

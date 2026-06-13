@@ -38,6 +38,11 @@ from green.core.strategy import Strategy
 type SelectBy = Literal["sharpe", "total_return"]
 type StrategyFactory = Callable[[dict[str, Any]], Strategy]
 
+# (timestep, marked-to-market equity) pairs. Timesteps are window-local (0-based
+# within the train/test slice) — offset by window.train_start / window.test_start
+# for an absolute axis.
+type EquityCurve = tuple[tuple[int, float], ...]
+
 
 class SweepPoint(BaseModel):
     model_config = ConfigDict(frozen=True)
@@ -54,6 +59,10 @@ class WindowResult(BaseModel):
     train: Metrics  # in-sample, for the chosen params
     test: Metrics  # held-out, same params
     sweep: tuple[SweepPoint, ...]  # full grid on train — the heatmap data
+    # The chosen params' equity curves. Side by side these ARE the overfit story:
+    # in-sample looks good, held-out is the honest test. The visuals draw these.
+    train_equity: EquityCurve = ()
+    test_equity: EquityCurve = ()
 
 
 class Verdict(BaseModel):
@@ -115,6 +124,7 @@ def run_walk_forward(
 
         sweep: list[SweepPoint] = []
         best: SweepPoint | None = None
+        best_train_equity: EquityCurve = ()
         for params in combos:
             outcome = run(
                 strategy_factory(dict(params)), adapter, train_data, starting_cash=starting_cash
@@ -131,6 +141,7 @@ def run_walk_forward(
             sweep.append(point)
             if best is None or _score(point.train, select_by) > _score(best.train, select_by):
                 best = point
+                best_train_equity = tuple(outcome.equity_curve)
         assert best is not None  # combos is never empty
 
         held_out = run(
@@ -147,6 +158,8 @@ def run_walk_forward(
                 periods_per_year=spec.periods_per_year,
             ),
             sweep=tuple(sweep),
+            train_equity=best_train_equity,
+            test_equity=tuple(held_out.equity_curve),
         )
         results.append(window_result)
         if progress is not None:

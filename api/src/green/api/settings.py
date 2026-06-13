@@ -34,16 +34,27 @@ class Settings(BaseModel):
 
     max_jobs: int = 256
 
+    # Browser origins allowed to call the API (the Next.js frontend). Defaults to
+    # the local dev server; override with GREEN_CORS_ORIGINS (comma-separated).
+    cors_origins: tuple[str, ...] = ("http://localhost:3000", "http://127.0.0.1:3000")
+
     @classmethod
     def from_env(cls) -> Settings:
         store = os.environ.get("GREEN_STORE", "memory")
         backend: StoreBackend = "sqlite" if store == "sqlite" else "memory"
+        origins_env = os.environ.get("GREEN_CORS_ORIGINS")
+        origins = (
+            tuple(o.strip() for o in origins_env.split(",") if o.strip())
+            if origins_env
+            else ("http://localhost:3000", "http://127.0.0.1:3000")
+        )
         return cls(
             jwt_secret=os.environ.get("GREEN_JWT_SECRET") or None,
             jwt_audience=os.environ.get("GREEN_JWT_AUDIENCE", "authenticated"),
             dev_user_id=os.environ.get("GREEN_DEV_USER_ID", "local-dev"),
             store=backend,
             sqlite_path=os.environ.get("GREEN_SQLITE_PATH", "green.db"),
+            cors_origins=origins,
         )
 
     @property

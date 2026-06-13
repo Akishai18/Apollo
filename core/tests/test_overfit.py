@@ -100,6 +100,26 @@ def test_robust_strategy_passes_the_gate() -> None:
     assert len(verdict.windows) == 4
 
 
+def test_verdict_carries_equity_curves_for_the_visuals() -> None:
+    adapter, dataset = _ou_dataset()
+    verdict = run_walk_forward(
+        MeanReversion,
+        adapter,
+        dataset,
+        {"symbol": ["SYN"], "lookback": [10, 20], "quantity": [10]},
+        train_size=200,
+        test_size=100,
+    )
+    # Each window exposes the chosen params' in-sample and held-out equity curves
+    # (one point per bar in the slice) — the data the web charts the overfit story
+    # from. Timesteps are window-local and start at 0.
+    for w in verdict.windows:
+        assert len(w.train_equity) == 200
+        assert len(w.test_equity) == 100
+        assert w.train_equity[0][0] == 0 and w.test_equity[0][0] == 0
+        assert all(isinstance(equity, float) for _, equity in w.test_equity)
+
+
 def test_curve_fit_strategy_is_rejected_with_legible_reason() -> None:
     adapter, dataset = _ou_dataset()
     grid = {

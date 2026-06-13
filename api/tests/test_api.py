@@ -65,6 +65,10 @@ def _get(client: httpx.Client, path: str, token: str | None = None) -> httpx.Res
     return client.get(path, headers=_headers(token))
 
 
+def _get_raw(client: httpx.Client, path: str, headers: dict[str, str]) -> httpx.Response:
+    return client.get(path, headers=headers)
+
+
 def _wait_for_terminal(client: TestClient, run_id: str, timeout: float = 30.0) -> dict[str, Any]:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -93,6 +97,33 @@ def test_submit_runs_the_gate_sandboxed_and_returns_a_verdict(client: TestClient
     assert isinstance(verdict["passed"], bool)
     assert verdict["reason"]  # always legible
     assert len(verdict["windows"]) == 2  # 120 bars, train 60 / test 30 → 2 windows
+    # Equity curves reach the API for the web charts: one point per bar per slice.
+    window = verdict["windows"][0]
+    assert len(window["train_equity"]) == 60
+    assert len(window["test_equity"]) == 30
+
+
+def test_list_returns_lean_summaries_not_full_verdicts(client: TestClient) -> None:
+    run_id = cast("str", _json(_post(client, "/runs", _BASE_REQUEST))["id"])
+    _wait_for_terminal(client, run_id)
+
+    rows = _json_list(_get(client, "/runs"))
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["id"] == run_id
+    assert row["state"] == "completed"
+    assert isinstance(row["passed"], bool)  # summarized from the verdict
+    assert row["reason"]
+    assert row["created_at"]  # timestamps for sorting in the UI
+    # The heavy fields (full verdict, per-window sweeps + equity) are NOT in a row.
+    assert "verdict" not in row
+    assert "windows" not in row
+
+
+def test_cors_allows_the_frontend_origin(client: TestClient) -> None:
+    origin = "http://localhost:3000"
+    response = _get_raw(client, "/healthz", {"Origin": origin})
+    assert response.headers.get("access-control-allow-origin") == origin
 
 
 def test_websocket_streams_progress_then_the_verdict(client: TestClient) -> None:

@@ -5,7 +5,7 @@
 > each layer's `CLAUDE.md`; this doc is the roadmap, decisions, and status.
 
 **Last updated:** 2026-06-11
-**Current phase:** Phase 4 (API + sandbox) — **done**; Phase 5 (Web) next
+**Current phase:** Phase 4 done + Phase-5 readiness pass done; **Phase 5 (Web) next**
 **Status legend:** `[x]` done · `[~]` in progress · `[ ]` not started
 
 ---
@@ -275,6 +275,25 @@ secret. The one remaining code stub for hosted deployment is a `PostgresRunStore
 (same `RunStore` interface, psycopg) selected by a new `GREEN_STORE=postgres` +
 `DATABASE_URL` — straightforward, but unverifiable here without a live database.
 
+**Phase-5 readiness pass (2026-06-11):** before the UI, made sure every web data
+need has a clean source and the API is browser-ready:
+- **Equity curves exposed** — the gate now retains the chosen params' in-sample
+  and held-out equity curves on each `WindowResult` (`train_equity`/`test_equity`,
+  window-local 0-based timesteps). Side by side they ARE the overfit story and
+  are the chart's data source (previously computed then discarded). Embedded in
+  the verdict JSON (durable for free); move to Storage/Parquet if rows get large.
+- **Lean list endpoint** — `GET /runs` returns `RunSummary` (id/state/passed/
+  reason/timestamps), not full verdicts, so the list view doesn't pull megabytes
+  of sweep + equity per row. Detail stays on `GET /runs/{id}`.
+- **CORS** — `CORSMiddleware`, origins via `GREEN_CORS_ORIGINS` (default the
+  Next.js dev server). The frontend can call the API on request one.
+- **Auth-alg decision documented** (api/CLAUDE.md): HS256 now (legacy Supabase
+  secret); RS256/JWKS is a localized extension for modern projects, deferred
+  until there's a project to verify against.
+Web data map (all sourced): equity chart ← `windows[].{train,test}_equity`;
+overfit curve ← `windows[].{train,test}` Sharpe; heatmap ← `windows[].sweep`;
+rejection panel ← `verdict.{passed,reason}`; list ← `GET /runs`; live ← the WS.
+
 ### Phase 5 — Web `[ ]`
 **Goal:** show the differentiator.
 - [ ] Next.js app + Supabase auth
@@ -344,6 +363,16 @@ value, multiple symbols, indicators up-to-now).
 
 ## 10. Update log
 
+- **2026-06-11** — **Phase-5 readiness pass.** Closed the one real gap before the
+  UI: the gate now exposes the chosen params' in-sample and held-out **equity
+  curves** on each `WindowResult` (`train_equity`/`test_equity`) — the data the
+  web's headline chart needs, previously discarded. Added a lean `RunSummary`
+  list (`GET /runs` no longer ships full verdicts + equity per row), **CORS**
+  middleware (`GREEN_CORS_ORIGINS`), and documented the HS256-now /
+  RS256-JWKS-later auth decision. Native↔sandboxed verdict parity still holds
+  with the new fields. Confirmed every Phase-5 web data need has a source (equity
+  / overfit curve / heatmap / rejection panel / list / live progress). 87 tests
+  green, 2 skipped, ruff + pyright-strict clean.
 - **2026-06-11** — **Phase 4 complete — persistence + auth + per-user isolation.**
   Auth (`auth.py`): Supabase JWT verification, HS256 with the algorithm pinned
   from our side (closes alg-confusion / `alg:none`); off when no secret is set so

@@ -22,7 +22,7 @@ import uuid
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 
-from green.api.models import ProgressInfo, RunRequest, RunResponse, RunState
+from green.api.models import ProgressInfo, RunRequest, RunResponse, RunState, RunSummary
 from green.api.registry import ConfigError, build_adapter, make_strategy_factory
 from green.api.store import RunStore
 from green.core import Verdict, WalkForwardProgress
@@ -95,8 +95,8 @@ class JobRunner:
         run = self._store.get_for_user(run_id, user_id)
         return run.to_response() if run is not None else None
 
-    def list_for_user(self, user_id: str) -> list[RunResponse]:
-        return [run.to_response() for run in self._store.list_for_user(user_id)]
+    def list_for_user(self, user_id: str) -> list[RunSummary]:
+        return [run.to_summary() for run in self._store.list_for_user(user_id)]
 
     async def stream(self, run_id: str, user_id: str) -> AsyncGenerator[RunResponse, None] | None:
         """Ownership-checked stream. None if the run is unknown or not the user's.

@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, cast
 
-from green.api.models import ProgressInfo, RunRequest, RunResponse, RunState
+from green.api.models import ProgressInfo, RunRequest, RunResponse, RunState, RunSummary
 from green.core import Verdict
 
 
@@ -47,6 +47,18 @@ class StoredRun:
             progress=self.progress,
             verdict=self.verdict,
             error=self.error,
+        )
+
+    def to_summary(self) -> RunSummary:
+        return RunSummary(
+            id=self.id,
+            state=self.state,
+            passed=self.verdict.passed if self.verdict is not None else None,
+            reason=self.verdict.reason if self.verdict is not None else None,
+            progress=self.progress,
+            error=self.error,
+            created_at=self.created_at,
+            updated_at=self.updated_at,
         )
 
 

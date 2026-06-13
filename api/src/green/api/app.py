@@ -18,11 +18,12 @@ Endpoints:
 from __future__ import annotations
 
 from fastapi import APIRouter, FastAPI, Header, Request, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from green.api.auth import AuthError, verify_supabase_jwt
 from green.api.jobs import JobRunner
-from green.api.models import RunRequest, RunResponse
+from green.api.models import RunRequest, RunResponse, RunSummary
 from green.api.settings import Settings
 from green.api.store import build_store
 
@@ -73,10 +74,10 @@ async def submit_run(
     return snapshot
 
 
-@router.get("/runs", response_model=list[RunResponse])
+@router.get("/runs", response_model=list[RunSummary])
 def list_runs(
     request: Request, authorization: str | None = Header(default=None)
-) -> list[RunResponse] | JSONResponse:
+) -> list[RunSummary] | JSONResponse:
     try:
         user_id = _resolve_user(_settings(request), authorization)
     except AuthError as exc:
@@ -135,6 +136,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = settings
     store = build_store(settings.store, sqlite_path=settings.sqlite_path)
     app.state.runner = JobRunner(store, max_jobs=settings.max_jobs)
+    # The browser frontend (Next.js) is a separate origin; allow it through.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=list(settings.cors_origins),
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
     app.include_router(router)
     return app
 

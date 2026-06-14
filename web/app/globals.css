@@ -1,0 +1,214 @@
+@import "tailwindcss";
+
+/*
+  Apollo design system — dark & atmospheric.
+  Near-black base with a slowly drifting aurora, near-white text, one indigo
+  accent. Mono for every number. Restrained, premium, instrument-grade.
+*/
+
+@theme {
+  /* Surfaces (dark) */
+  --color-bg: #090a10; /* page base, near-black with a blue lean */
+  --color-bg-soft: #0c0e16; /* alternating bands */
+  --color-surface: #13151f; /* cards / panels */
+  --color-surface-2: #191c27; /* raised within a card */
+  --color-elevated: #1f2331; /* chips, inputs */
+
+  /* Text */
+  --color-text: #eef0f6; /* headings, near-white */
+  --color-text-dim: #b3b8c6; /* body */
+  --color-muted: #868c9d; /* secondary */
+  --color-faint: #595f70; /* labels, captions */
+
+  /* Lines */
+  --color-line: #20232f; /* hairline */
+  --color-line-strong: #2c3140; /* visible border */
+
+  /* Indigo accent (the one brand color) */
+  --color-accent: #5d6bff;
+  --color-accent-hi: #7c87ff; /* hover / brighter */
+  --color-accent-ink: #ffffff; /* text on accent */
+
+  /* Verdict status (tuned for dark) */
+  --color-pass: #34d399; /* emerald */
+  --color-reject: #fb7185; /* rose */
+
+  /* Fonts (next/font sets the underlying --ff-* variables on <html>) */
+  --font-display: var(--ff-display), ui-sans-serif, system-ui, sans-serif;
+  --font-sans: var(--ff-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--ff-mono), ui-monospace, "SFMono-Regular", monospace;
+
+  /* Radii */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  --radius-xl: 22px;
+  --radius-2xl: 28px;
+
+  --ease-out-soft: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@layer base {
+  * {
+    border-color: var(--color-line);
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  ::selection {
+    background: var(--color-accent);
+    color: var(--color-accent-ink);
+  }
+
+  /* Tabular, lined-up numerals — the instrument feel. */
+  .nums {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum" 1;
+    letter-spacing: -0.01em;
+  }
+
+  .focusable:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+    border-radius: var(--radius-sm);
+  }
+}
+
+/* ---- Aurora: a slow, always-moving glow behind the hero ---- */
+.aurora {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.aurora::before,
+.aurora::after,
+.aurora > span {
+  content: "";
+  position: absolute;
+  border-radius: 9999px;
+  filter: blur(80px);
+  opacity: 0.55;
+  will-change: transform;
+}
+.aurora::before {
+  width: 52vw;
+  height: 52vw;
+  left: 6%;
+  top: -20%;
+  background: radial-gradient(circle at center, #4d5cff 0%, transparent 66%);
+  opacity: 0.42;
+  animation: drift-a 26s var(--ease-out-soft) infinite alternate;
+}
+.aurora::after {
+  width: 46vw;
+  height: 46vw;
+  right: 2%;
+  top: -10%;
+  background: radial-gradient(circle at center, #7c4dff 0%, transparent 66%);
+  opacity: 0.32;
+  animation: drift-b 32s var(--ease-out-soft) infinite alternate;
+}
+.aurora > span {
+  width: 42vw;
+  height: 42vw;
+  left: 34%;
+  top: 4%;
+  background: radial-gradient(circle at center, #1f9bff 0%, transparent 62%);
+  opacity: 0.24;
+  animation: drift-c 38s var(--ease-out-soft) infinite alternate;
+}
+
+@keyframes drift-a {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  100% {
+    transform: translate3d(6%, 8%, 0) scale(1.18);
+  }
+}
+@keyframes drift-b {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1.05);
+  }
+  100% {
+    transform: translate3d(-7%, 6%, 0) scale(0.92);
+  }
+}
+@keyframes drift-c {
+  0% {
+    transform: translate3d(0, 0, 0) scale(0.95);
+  }
+  100% {
+    transform: translate3d(4%, -6%, 0) scale(1.15);
+  }
+}
+
+/* Hairline grid texture for product surfaces. */
+.grid-lines {
+  background-image:
+    linear-gradient(to right, var(--color-line) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--color-line) 1px, transparent 1px);
+  background-size: 38px 38px;
+}
+
+/* Film grain — kills the flat "AI gradient" look, adds texture. */
+.grain {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-repeat: repeat;
+  opacity: 0.045;
+  mix-blend-mode: overlay;
+}
+
+/* Radial vignette to focus the center and darken edges. */
+.vignette {
+  background: radial-gradient(
+    120% 90% at 50% 25%,
+    transparent 0%,
+    transparent 45%,
+    var(--color-bg) 100%
+  );
+}
+
+/* Seamless marquee for the live verdict ticker. */
+@keyframes marquee {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+.marquee-track {
+  animation: marquee 48s linear infinite;
+}
+.marquee-pause:hover .marquee-track {
+  animation-play-state: paused;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  .aurora::before,
+  .aurora::after,
+  .aurora > span {
+    animation: none !important;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}

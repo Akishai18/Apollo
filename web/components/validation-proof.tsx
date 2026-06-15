@@ -58,7 +58,7 @@ function VerdictCard({ verdict, test }: { verdict: Verdict; test: number[] }) {
   const sharpe = `${sign}${Math.abs(verdict.testSharpe).toFixed(2)}`;
   const color = verdict.passed ? "var(--color-pass)" : "var(--color-reject)";
   return (
-    <div className="flex h-full flex-col rounded-2xl border border-line bg-surface p-6 transition-colors hover:border-line-strong">
+    <div className="panel panel-hover flex h-full flex-col rounded-2xl p-6">
       <div className="flex items-center justify-between">
         <span className="font-mono text-[11px] uppercase tracking-wider text-faint">
           Walk-forward · {verdict.windows} windows

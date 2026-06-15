@@ -12,9 +12,7 @@ import { AGENT_STEPS, SIDEBAR_STRATEGIES, CHAT, TEST_PASS_EQUITY } from "@/lib/m
 
 export function AppPreview({ className = "" }: { className?: string }) {
   return (
-    <div
-      className={`overflow-hidden rounded-2xl border border-line-strong bg-surface shadow-2xl shadow-black/50 ${className}`}
-    >
+    <div className={`panel overflow-hidden rounded-2xl ${className}`}>
       {/* window chrome */}
       <div className="flex h-10 items-center gap-2 border-b border-line px-4">
         <span className="flex gap-1.5">

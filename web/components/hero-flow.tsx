@@ -108,7 +108,7 @@ export function HeroFlow() {
   return (
     <div className="relative w-full max-w-md lg:ml-auto">
       {/* 1 · prompt */}
-      <div className="rounded-2xl border border-line-strong bg-surface/70 p-4 shadow-2xl shadow-black/40 backdrop-blur-xl">
+      <div className="glass rounded-2xl p-4">
         <div className="mb-2 flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-wider text-faint">
           <span className="h-1.5 w-1.5 rounded-full bg-accent" /> You
         </div>
@@ -133,7 +133,7 @@ export function HeroFlow() {
       {/* 2 · compiled — cascades right */}
       <div className="ml-6">
         <Reveal show={phase >= 1} reduce={!!reduce}>
-          <div className="rounded-2xl border border-line-strong bg-surface/70 p-4 backdrop-blur-xl">
+          <div className="glass rounded-2xl p-4">
             <div className="mb-2 flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-wider text-faint">
               <ApolloMark className="h-3.5 w-3.5 text-accent" /> compiled
             </div>
@@ -164,7 +164,7 @@ export function HeroFlow() {
       {/* 3 · verdict — cascades further */}
       <div className="ml-12">
         <Reveal show={phase >= 2} reduce={!!reduce}>
-          <div className="rounded-2xl border border-line-strong bg-surface/80 p-4 shadow-2xl shadow-black/40 backdrop-blur-xl">
+          <div className="glass rounded-2xl p-4">
             <div className="mb-3 flex items-center justify-between">
               <span className="font-mono text-[10px] uppercase tracking-wider text-faint">
                 Walk-forward verdict

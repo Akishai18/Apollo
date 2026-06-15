@@ -7,7 +7,7 @@ export function FinalCta() {
   return (
     <section className="border-t border-line bg-bg/70 px-5 py-24 backdrop-blur-sm sm:px-8">
       <Reveal>
-        <div className="relative mx-auto max-w-6xl overflow-hidden rounded-3xl border border-line-strong bg-surface px-8 py-16 sm:px-14 sm:py-20">
+        <div className="panel relative mx-auto max-w-6xl overflow-hidden rounded-3xl px-8 py-16 sm:px-14 sm:py-20">
           {/* accent glows */}
           <div
             className="pointer-events-none absolute -left-24 -top-28 h-80 w-80 rounded-full bg-accent/25 blur-3xl"

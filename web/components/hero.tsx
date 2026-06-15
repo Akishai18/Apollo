@@ -50,7 +50,7 @@ export function Hero() {
             Trading strategies with
             <span className="relative mt-1 block h-[1.15em]">
               {reduce ? (
-                <span className="text-accent">no overfitting.</span>
+                <span className="text-gradient">no overfitting.</span>
               ) : (
                 <AnimatePresence>
                   <motion.span
@@ -59,7 +59,7 @@ export function Hero() {
                     animate={{ y: 0, opacity: 1 }}
                     exit={{ y: "-0.5em", opacity: 0 }}
                     transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
-                    className="absolute inset-x-0 flex justify-start text-accent"
+                    className="text-gradient absolute inset-x-0 flex justify-start pb-1"
                   >
                     {PHRASES[i]}
                   </motion.span>

@@ -10,8 +10,8 @@ const base =
   "active:translate-y-px";
 
 const variants: Record<Variant, string> = {
-  primary: "bg-white text-bg hover:bg-white/90", // the bright pill
-  accent: "bg-accent text-accent-ink hover:bg-accent-hi",
+  primary: "bg-white text-bg hover:bg-white/90 shadow-lg shadow-black/20", // the bright pill
+  accent: "accent-gradient text-accent-ink shadow-lg shadow-accent/25 hover:brightness-110",
   outline: "border border-line-strong bg-white/[0.03] text-text hover:bg-white/[0.08]",
   ghost: "text-text-dim hover:bg-white/[0.06] hover:text-text",
 };

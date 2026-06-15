@@ -81,6 +81,101 @@ export const SIDEBAR_STRATEGIES: { name: string; passed: boolean }[] = [
   { name: "Gold breakout, ATR", passed: false },
 ];
 
+// Strategy threads in the app sidebar (each thread is a strategy + its verdict).
+export type StrategyThread = {
+  id: string;
+  name: string;
+  state: "passed" | "rejected" | "running";
+  when: string;
+  group: "Today" | "Yesterday" | "Earlier";
+};
+
+export const APP_STRATEGIES: StrategyThread[] = [
+  { id: "btc-trend", name: "BTC trend · daily", state: "running", when: "now", group: "Today" },
+  { id: "aapl-mr", name: "AAPL mean-reversion", state: "passed", when: "2h ago", group: "Today" },
+  { id: "spy-x", name: "SPY 50/200 crossover", state: "passed", when: "yesterday", group: "Yesterday" },
+  { id: "nq-mom", name: "NQ momentum · weekly", state: "rejected", when: "yesterday", group: "Yesterday" },
+  { id: "tsla-mr", name: "TSLA reversion · 5% stop", state: "passed", when: "2d ago", group: "Earlier" },
+  { id: "gold-atr", name: "Gold ATR breakout", state: "rejected", when: "3d ago", group: "Earlier" },
+];
+
+// A full mocked run result the workspace produces from a prompt (shaped to mirror
+// the API verdict). Cycled through as the user submits prompts.
+export type RunScenario = {
+  strategy: string;
+  params: { k: string; v: string }[];
+  passed: boolean;
+  trainSharpe: string;
+  testSharpe: string;
+  retention: string;
+  oosTrades: string;
+  reason: string;
+  reply: string;
+  equity: number[];
+};
+
+export const RUN_SCENARIOS: RunScenario[] = [
+  {
+    strategy: "MeanReversion",
+    params: [
+      { k: "symbol", v: "AAPL" },
+      { k: "lookback", v: "20" },
+      { k: "entry_z", v: "-2.0" },
+    ],
+    passed: true,
+    trainSharpe: "2.16",
+    testSharpe: "1.30",
+    retention: "60%",
+    oosTrades: "13",
+    reason:
+      "held-out Sharpe 1.30 retains 60% of train Sharpe 2.16 across 4 walk-forward windows (13 out-of-sample trades).",
+    reply: "It holds up out of sample — the edge survives data the tuning never saw. Here's the curve.",
+    equity: TEST_PASS_EQUITY,
+  },
+  {
+    strategy: "Momentum",
+    params: [
+      { k: "universe", v: "NDX" },
+      { k: "lookback", v: "63" },
+      { k: "top_n", v: "10" },
+    ],
+    passed: false,
+    trainSharpe: "1.74",
+    testSharpe: "-1.20",
+    retention: "-69%",
+    oosTrades: "9",
+    reason:
+      "performance collapses out of sample — held-out Sharpe -1.20 retains -69% of train Sharpe 1.74; the edge looks fitted to the training windows.",
+    reply: "I'd pass on this. It looked great in-sample but collapses out of sample — classic overfit.",
+    equity: TEST_REJECT_EQUITY,
+  },
+  {
+    strategy: "MaCrossover",
+    params: [
+      { k: "symbol", v: "SPY" },
+      { k: "fast", v: "50" },
+      { k: "slow", v: "200" },
+    ],
+    passed: true,
+    trainSharpe: "1.38",
+    testSharpe: "1.05",
+    retention: "54%",
+    oosTrades: "7",
+    reason:
+      "held-out Sharpe 1.05 retains 54% of train Sharpe 1.38 across 4 walk-forward windows (7 out-of-sample trades).",
+    reply: "This one holds up — modest but real out-of-sample performance.",
+    equity: TEST_PASS_EQUITY,
+  },
+];
+
+// Example prompts offered in the workspace composer.
+export const COMPOSER_EXAMPLES: string[] = [
+  "Mean-reversion on AAPL — buy 2σ below the 20-day average, exit at the mean.",
+  "Moving-average crossover on SPY — long when the 50-day crosses above the 200-day.",
+  "Momentum on the Nasdaq 100 — weekly, hold the 10 strongest of the last 3 months.",
+  "Bollinger breakout on BTC, daily, 20-period band.",
+];
+
 // Live verdict ticker — recent validations scrolling under the hero.
 export const TICKER: { name: string; passed: boolean; note: string }[] = [
   { name: "AAPL mean-reversion", passed: true, note: "retains 62%" },

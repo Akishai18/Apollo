@@ -54,7 +54,7 @@ export function HowItWorks() {
           />
           {STEPS.map((step, i) => (
             <Reveal key={step.n} delay={i * 0.08}>
-              <div className="group relative flex h-full flex-col gap-5 rounded-2xl border border-line bg-surface p-7 transition-colors hover:border-accent/40">
+              <div className="panel panel-hover group relative flex h-full flex-col gap-5 rounded-2xl p-7">
                 <div className="flex items-center gap-3">
                   <span className="nums flex h-9 w-9 items-center justify-center rounded-full border border-line-strong bg-bg-soft text-sm font-semibold text-accent">
                     {step.n}

@@ -27,7 +27,7 @@ export function Examples() {
         <div className="mt-12 grid grid-cols-1 gap-4 sm:grid-cols-2">
           {EXAMPLE_PROMPTS.map((ex, i) => (
             <Reveal key={i} delay={(i % 2) * 0.06}>
-              <div className="group flex h-full flex-col justify-between gap-5 rounded-2xl border border-line bg-surface p-5 transition-colors hover:border-accent/40">
+              <div className="panel panel-hover group flex h-full flex-col justify-between gap-5 rounded-2xl p-5">
                 <p className="font-mono text-sm leading-relaxed text-text-dim">
                   <span className="mr-2 text-accent">&rsaquo;</span>
                   {ex.prompt}

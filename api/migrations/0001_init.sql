@@ -12,11 +12,12 @@
 create table if not exists public.runs (
     id            text primary key,
     user_id       uuid not null references auth.users (id) on delete cascade,
-    state         text not null check (state in ('queued', 'running', 'completed', 'error')),
+    state         text not null check (state in ('queued', 'generating', 'running', 'completed', 'error')),
     request_json  jsonb not null,
     progress_json jsonb,
     verdict_json  jsonb,
     error         text,
+    note          text,  -- generator rationale (natural-language runs)
     created_at    timestamptz not null default now(),
     updated_at    timestamptz not null default now()
 );

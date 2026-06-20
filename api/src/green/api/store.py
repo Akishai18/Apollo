@@ -37,6 +37,7 @@ class StoredRun:
     progress: ProgressInfo | None = None
     verdict: Verdict | None = None
     error: str | None = None
+    note: str | None = None  # generator rationale (NL-generated runs)
     created_at: str = ""
     updated_at: str = ""
 
@@ -47,6 +48,7 @@ class StoredRun:
             progress=self.progress,
             verdict=self.verdict,
             error=self.error,
+            note=self.note,
         )
 
     def to_summary(self) -> RunSummary:
@@ -84,6 +86,7 @@ class RunStore(ABC):
         progress: ProgressInfo | None = None,
         verdict: Verdict | None = None,
         error: str | None = None,
+        note: str | None = None,
     ) -> None: ...
 
     @abstractmethod
@@ -129,6 +132,7 @@ class InMemoryRunStore(RunStore):
         progress: ProgressInfo | None = None,
         verdict: Verdict | None = None,
         error: str | None = None,
+        note: str | None = None,
     ) -> None:
         with self._lock:
             run = self._runs.get(run_id)
@@ -142,6 +146,8 @@ class InMemoryRunStore(RunStore):
                 run.verdict = verdict
             if error is not None:
                 run.error = error
+            if note is not None:
+                run.note = note
             run.updated_at = _now_iso()
 
     def list_for_user(self, user_id: str) -> list[StoredRun]:
@@ -158,6 +164,7 @@ CREATE TABLE IF NOT EXISTS runs (
     progress_json TEXT,
     verdict_json TEXT,
     error        TEXT,
+    note         TEXT,
     created_at   TEXT NOT NULL,
     updated_at   TEXT NOT NULL
 );
@@ -175,6 +182,10 @@ class SqliteRunStore(RunStore):
         self._lock = threading.Lock()
         with self._lock:
             self._conn.executescript(_SCHEMA)
+            # Additive migration for DBs created before `note` existed.
+            cols = {r[1] for r in self._conn.execute("PRAGMA table_info(runs)").fetchall()}
+            if "note" not in cols:
+                self._conn.execute("ALTER TABLE runs ADD COLUMN note TEXT")
             self._conn.commit()
 
     def create(self, run_id: str, user_id: str, request: RunRequest) -> StoredRun:
@@ -200,7 +211,7 @@ class SqliteRunStore(RunStore):
         with self._lock:
             cursor = self._conn.execute(
                 "SELECT id, user_id, state, request_json, progress_json, verdict_json, "
-                "error, created_at, updated_at FROM runs WHERE id = ?",
+                "error, note, created_at, updated_at FROM runs WHERE id = ?",
                 (run_id,),
             )
             row = cursor.fetchone()
@@ -214,6 +225,7 @@ class SqliteRunStore(RunStore):
         progress: ProgressInfo | None = None,
         verdict: Verdict | None = None,
         error: str | None = None,
+        note: str | None = None,
     ) -> None:
         sets: list[str] = []
         values: list[Any] = []
@@ -229,6 +241,9 @@ class SqliteRunStore(RunStore):
         if error is not None:
             sets.append("error = ?")
             values.append(error)
+        if note is not None:
+            sets.append("note = ?")
+            values.append(note)
         sets.append("updated_at = ?")
         values.append(_now_iso())
         values.append(run_id)
@@ -240,7 +255,7 @@ class SqliteRunStore(RunStore):
         with self._lock:
             cursor = self._conn.execute(
                 "SELECT id, user_id, state, request_json, progress_json, verdict_json, "
-                "error, created_at, updated_at FROM runs WHERE user_id = ? ORDER BY created_at",
+                "error, note, created_at, updated_at FROM runs WHERE user_id = ? ORDER BY created_at",
                 (user_id,),
             )
             rows = cursor.fetchall()
@@ -249,12 +264,13 @@ class SqliteRunStore(RunStore):
     @staticmethod
     def _row_to_run(row: tuple[Any, ...]) -> StoredRun:
         id_, user_id, state, request_json = row[0], row[1], row[2], row[3]
-        progress_json, verdict_json, error, created, updated = (
+        progress_json, verdict_json, error, note, created, updated = (
             row[4],
             row[5],
             row[6],
             row[7],
             row[8],
+            row[9],
         )
         progress = (
             ProgressInfo.model_validate_json(cast("str", progress_json))
@@ -274,6 +290,7 @@ class SqliteRunStore(RunStore):
             progress=progress,
             verdict=verdict,
             error=cast("str | None", error),
+            note=cast("str | None", note),
             created_at=cast("str", created),
             updated_at=cast("str", updated),
         )

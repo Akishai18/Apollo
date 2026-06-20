@@ -1,5 +1,5 @@
 [tool.uv.workspace]
-members = ["core", "adapters", "strategies", "sandbox", "api"]
+members = ["core", "adapters", "strategies", "sandbox", "api", "generator"]
 
 [tool.uv.sources]
 green-core = { workspace = true }
@@ -7,6 +7,7 @@ green-adapters = { workspace = true }
 green-strategies = { workspace = true }
 green-sandbox = { workspace = true }
 green-api = { workspace = true }
+green-generator = { workspace = true }
 
 [dependency-groups]
 dev = [
@@ -15,6 +16,7 @@ dev = [
     "green-strategies",
     "green-sandbox",
     "green-api",
+    "green-generator",
     "ruff>=0.9",
     "pyright>=1.1.390",
     "pytest>=8.3",
@@ -25,7 +27,9 @@ dev = [
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-src = ["core/src", "adapters/src", "strategies/src", "sandbox/src", "api/src"]
+src = ["core/src", "adapters/src", "strategies/src", "sandbox/src", "api/src", "generator/src"]
+# Vendored / non-source trees ruff should not lint (installed skills, the web app).
+extend-exclude = [".claude", "web", "**/data"]
 
 [tool.ruff.lint]
 select = [
@@ -54,8 +58,17 @@ include = [
     "sandbox/tests",
     "api/src",
     "api/tests",
+    "generator/src",
+    "generator/tests",
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["core/tests", "adapters/tests", "strategies/tests", "sandbox/tests", "api/tests"]
+testpaths = [
+    "core/tests",
+    "adapters/tests",
+    "strategies/tests",
+    "sandbox/tests",
+    "api/tests",
+    "generator/tests",
+]
 addopts = "-ra"

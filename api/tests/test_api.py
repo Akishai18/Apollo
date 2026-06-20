@@ -83,6 +83,25 @@ def test_healthz(client: TestClient) -> None:
     assert _json(_get(client, "/healthz")) == {"status": "ok"}
 
 
+def test_templates_are_runnable_end_to_end(client: TestClient) -> None:
+    """The frontend's starting points: GET /templates returns ready RunRequests,
+    and submitting one runs the real gate to a verdict (the wiring contract)."""
+    templates = _json_list(_get(client, "/templates"))
+    keys = {t["id"] if "id" in t else t["key"] for t in templates}
+    assert {"mean-reversion", "crossover"} <= keys
+
+    mr = next(t for t in templates if t["key"] == "mean-reversion")
+    request = cast("dict[str, Any]", mr["request"])
+    run_id = cast("str", _json(_post(client, "/runs", request))["id"])
+
+    final = _wait_for_terminal(client, run_id)
+    assert final["state"] == "completed"
+    verdict = final["verdict"]
+    assert verdict is not None
+    assert verdict["passed"] is True  # mean-reversion holds up on the toy OU series
+    assert len(verdict["windows"]) == 4
+
+
 def test_submit_runs_the_gate_sandboxed_and_returns_a_verdict(client: TestClient) -> None:
     submit = _post(client, "/runs", _BASE_REQUEST)
     assert submit.status_code == 202
@@ -145,6 +164,47 @@ def test_websocket_streams_progress_then_the_verdict(client: TestClient) -> None
     # Per-window progress was actually streamed, in order, before the verdict.
     assert progress_totals == sorted(progress_totals)
     assert progress_totals[-1] == 2  # both windows reported
+
+
+def test_generate_runs_through_the_same_gate_to_a_verdict(client: TestClient) -> None:
+    """A natural-language submission generates a strategy (offline: the mock
+    provider, since no API key is set) and runs it through the SAME gate — no
+    trust shortcut. The generator's rationale surfaces as `note`."""
+    submit = _post(client, "/generate", {"prompt": "mean reversion on SYN", "tier": "pro"})
+    assert submit.status_code == 202
+    body = _json(submit)
+    run_id = cast("str", body["id"])
+
+    final = _wait_for_terminal(client, run_id)
+    assert final["state"] == "completed"
+    assert final["verdict"] is not None
+    assert isinstance(final["verdict"]["passed"], bool)
+    assert final["note"]  # the generator's rationale reached the API
+
+
+def test_generate_streams_to_completion_with_rationale_over_ws(client: TestClient) -> None:
+    # The offline mock generates instantly, so the `generating` snapshot may be
+    # coalesced before a subscriber attaches (real model calls take seconds and
+    # the phase is plainly observable). What's deterministic: the stream reaches a
+    # verdict and the generator's rationale rides along.
+    submit = _json(_post(client, "/generate", {"prompt": "buy and hold SYN", "tier": "free"}))
+    run_id = cast("str", submit["id"])
+
+    final: dict[str, Any] | None = None
+    with client.websocket_connect(f"/runs/{run_id}/ws") as ws:
+        while True:
+            msg = cast("dict[str, Any]", ws.receive_json())
+            if msg["state"] in ("completed", "error"):
+                final = msg
+                break
+
+    assert final is not None and final["state"] == "completed"
+    assert final["verdict"] is not None
+    assert final["note"]  # the rationale streamed through to the client
+
+
+def test_generate_rejects_empty_prompt(client: TestClient) -> None:
+    assert _post(client, "/generate", {"prompt": "", "tier": "pro"}).status_code == 422
 
 
 def test_get_unknown_run_is_404(client: TestClient) -> None:

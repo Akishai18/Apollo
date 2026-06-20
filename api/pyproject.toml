@@ -8,8 +8,9 @@ dependencies = [
     "green-adapters",
     "green-strategies",
     "green-sandbox",
+    "green-generator",
     "fastapi>=0.115",
-    "uvicorn>=0.30",
+    "uvicorn[standard]>=0.30",  # [standard] bundles websockets — required for the WS endpoint
     "pydantic>=2.10",
 ]
 

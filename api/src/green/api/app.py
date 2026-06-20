@@ -23,9 +23,10 @@ from fastapi.responses import JSONResponse
 
 from green.api.auth import AuthError, verify_supabase_jwt
 from green.api.jobs import JobRunner
-from green.api.models import RunRequest, RunResponse, RunSummary
+from green.api.models import GenerateRequest, RunRequest, RunResponse, RunSummary
 from green.api.settings import Settings
 from green.api.store import build_store
+from green.api.templates import templates_payload
 
 router = APIRouter()
 
@@ -57,6 +58,13 @@ def healthz() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@router.get("/templates")
+def list_templates() -> list[dict[str, object]]:
+    """Runnable strategy templates (real source + default config). Public — the
+    frontend uses these as starting points until the NL generator lands."""
+    return templates_payload()
+
+
 @router.post("/runs", response_model=RunResponse, status_code=202)
 async def submit_run(
     request: Request, body: RunRequest, authorization: str | None = Header(default=None)
@@ -69,6 +77,24 @@ async def submit_run(
         return JSONResponse({"detail": str(exc)}, status_code=401)
     runner = _runner(request)
     run_id = runner.submit(user_id, body)
+    snapshot = runner.get(run_id, user_id)
+    assert snapshot is not None  # just created
+    return snapshot
+
+
+@router.post("/generate", response_model=RunResponse, status_code=202)
+async def submit_generation(
+    request: Request, body: GenerateRequest, authorization: str | None = Header(default=None)
+) -> RunResponse | JSONResponse:
+    """Submit a natural-language strategy description. Apollo generates the code
+    (tier picks the model — server-side only), then it runs through the same gate.
+    Returns immediately; the run streams `generating → running → completed`."""
+    try:
+        user_id = _resolve_user(_settings(request), authorization)
+    except AuthError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=401)
+    runner = _runner(request)
+    run_id = runner.submit_generation(user_id, body.prompt, body.tier)
     snapshot = runner.get(run_id, user_id)
     assert snapshot is not None  # just created
     return snapshot
@@ -135,7 +161,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(title="green — strategy validation API", version="0.1.0")
     app.state.settings = settings
     store = build_store(settings.store, sqlite_path=settings.sqlite_path)
-    app.state.runner = JobRunner(store, max_jobs=settings.max_jobs)
+    app.state.runner = JobRunner(
+        store,
+        max_jobs=settings.max_jobs,
+        anthropic_key=settings.anthropic_api_key,
+        gemini_key=settings.gemini_api_key,
+        gemini_model=settings.gemini_model,
+    )
     # The browser frontend (Next.js) is a separate origin; allow it through.
     app.add_middleware(
         CORSMiddleware,

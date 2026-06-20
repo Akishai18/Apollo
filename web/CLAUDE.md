@@ -34,8 +34,38 @@ describing them*; validation is the trust **kicker**, not the headline.
 - **Rules:** Lucide icons only (no emoji), `cursor-pointer` + 150-300ms color
   transitions, `focusable` class for focus rings, `prefers-reduced-motion`
   respected (aurora freezes, headline shows a static word).
-- **Mock data** in `lib/mock.ts` is shaped like the API `Verdict` so wiring to
-  FastAPI later is a swap.
+- **Wired to the live API.** `lib/api.ts` (REST + WebSocket client,
+  `NEXT_PUBLIC_API_URL`, default `http://localhost:8000`) + `lib/report.ts`
+  (maps the backend `Verdict` JSON → the report view-model). The app submits a
+  real run, streams real progress, and renders the real verdict. Until the NL
+  generator exists, a prompt maps to a backend **strategy template** (`GET
+  /templates`) — the whole sandbox + gate runs for real; only NL→code is stubbed.
+  `lib/mock.ts` still backs the **landing page** visuals.
+- **Run it (two servers):** `uv run uvicorn green.api:app --port 8000` (needs
+  `uvicorn[standard]` for WebSockets) + `npm run dev` (port 3000; CORS allows it).
+  Auth is off in dev (API resolves a fixed user), so no token needed yet.
+
+## The app (`/app`) — workspace
+
+- **Shell** (`components/app/app-shell.tsx`): static sidebar on desktop, off-canvas
+  drawer on mobile. Sidebar = search (⌘K affordance), time-grouped strategy
+  threads with state dots, Companion slot, user.
+- **Workspace** (`workspace.tsx`): prompt-first conversation thread. Empty =
+  `Launchpad` (centered greeting + composer + archetype cards + stat pulse). After
+  submit = a thread of `RunResult`s with a docked composer; each run streams its
+  build (`BuildingState`) then resolves into the inline `VerdictReport`. `submit()`
+  matches the prompt to a mock scenario so the report stays coherent. (A split
+  "conversation + persistent report canvas" variant was tried and reverted — keep
+  the thread unless revisiting that.)
+- **The signature artifact** is `VerdictReport` (`verdict-report.tsx`): the verdict
+  is an *inspectable report* — header + 6 metric tiles + segmented tabs
+  (Equity / Windows / Sweep) + reasoning + action row. This is Apollo's unique UI;
+  no other trading app turns a backtest into a legible audit.
+- **Data-viz** (`report-viz.tsx`, hand-rolled SVG/CSS, no chart lib):
+  `EquityReport` (in-sample→held-out split, divider, gridlines, % axis, gradient,
+  animated draw-in via `.draw-line`), `SweepHeatmap` (param grid colored by
+  Sharpe; robust = broad green, overfit = lone hot cell), `WindowBars` (per-window
+  train vs held-out), `MetricTile`. The overfit *story* is told visually — keep it.
 
 ## Stack
 

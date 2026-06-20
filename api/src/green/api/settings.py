@@ -38,6 +38,14 @@ class Settings(BaseModel):
     # the local dev server; override with GREEN_CORS_ORIGINS (comma-separated).
     cors_origins: tuple[str, ...] = ("http://localhost:3000", "http://127.0.0.1:3000")
 
+    # Generator (NL → strategy) provider keys. When a tier's real provider has no
+    # key, the generator falls back to the offline mock — so the app works in dev
+    # and goes live the moment a key is set. Model ids live in green.generator.
+    anthropic_api_key: str | None = None  # paid tiers (Sonnet / Opus)
+    gemini_api_key: str | None = None  # free tier
+    gemini_model: str | None = None  # optional override of the free model id
+    default_tier: str = "pro"
+
     @classmethod
     def from_env(cls) -> Settings:
         store = os.environ.get("GREEN_STORE", "memory")
@@ -55,6 +63,14 @@ class Settings(BaseModel):
             store=backend,
             sqlite_path=os.environ.get("GREEN_SQLITE_PATH", "green.db"),
             cors_origins=origins,
+            anthropic_api_key=os.environ.get("GREEN_ANTHROPIC_API_KEY")
+            or os.environ.get("ANTHROPIC_API_KEY")
+            or None,
+            gemini_api_key=os.environ.get("GREEN_GEMINI_API_KEY")
+            or os.environ.get("GEMINI_API_KEY")
+            or None,
+            gemini_model=os.environ.get("GREEN_GEMINI_MODEL") or None,
+            default_tier=os.environ.get("GREEN_DEFAULT_TIER", "pro"),
         )
 
     @property

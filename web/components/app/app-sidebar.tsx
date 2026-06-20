@@ -39,7 +39,7 @@ export function AppSidebar({ onNavigate }: { onNavigate?: () => void }) {
 
       {/* search */}
       <div className="px-3 pt-3">
-        <div className="flex items-center gap-2 rounded-lg border border-line bg-bg/60 px-2.5 transition-colors focus-within:border-line-strong">
+        <div className="flex items-center gap-2 rounded-lg border border-line bg-bg/60 px-2.5 transition-colors focus-within:border-accent/50">
           <Search className="h-3.5 w-3.5 shrink-0 text-faint" />
           <input
             value={query}
@@ -47,6 +47,9 @@ export function AppSidebar({ onNavigate }: { onNavigate?: () => void }) {
             placeholder="Search strategies"
             className="h-8 w-full bg-transparent text-sm text-text placeholder:text-faint focus:outline-none"
           />
+          <kbd className="hidden rounded border border-line-strong bg-elevated px-1.5 py-0.5 font-mono text-[10px] text-faint md:inline">
+            ⌘K
+          </kbd>
         </div>
       </div>
 

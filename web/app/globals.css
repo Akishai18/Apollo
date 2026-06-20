@@ -217,6 +217,36 @@
   background-size: 38px 38px;
 }
 
+/* Animated line draw-in for charts (path needs pathLength="1"). */
+@keyframes draw-in {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+.draw-line {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation: draw-in 1.1s var(--ease-out-soft) forwards;
+}
+
+/* Indeterminate progress bar (a sliding segment) for unknown-duration work. */
+@keyframes indeterminate {
+  0% {
+    left: -42%;
+  }
+  100% {
+    left: 100%;
+  }
+}
+.bar-indeterminate {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  width: 42%;
+  left: -42%;
+  animation: indeterminate 1.1s ease-in-out infinite;
+}
+
 /* Faint dot-grid texture for the app surface. */
 .dot-grid {
   background-image: radial-gradient(var(--color-line) 1px, transparent 1px);
@@ -297,6 +327,15 @@
 }
 .marquee-pause:hover .marquee-track {
   animation-play-state: paused;
+}
+
+/* Reduced-motion: charts appear fully drawn, no animation. */
+@media (prefers-reduced-motion: reduce) {
+  .draw-line {
+    stroke-dasharray: none;
+    stroke-dashoffset: 0;
+    animation: none;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

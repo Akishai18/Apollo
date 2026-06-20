@@ -41,9 +41,20 @@ class RunRequest(BaseModel):
     min_oos_trades: int = 2
 
 
+class GenerateRequest(BaseModel):
+    """Submit a natural-language strategy description; Apollo generates the code,
+    then it runs through the same gate. `tier` selects the (branded) model."""
+
+    model_config = ConfigDict(frozen=True)
+
+    prompt: str = Field(min_length=1)
+    tier: str = "pro"
+
+
 class RunState(StrEnum):
     QUEUED = "queued"
-    RUNNING = "running"
+    GENERATING = "generating"  # NL → strategy code (generator runs)
+    RUNNING = "running"  # the walk-forward gate runs
     COMPLETED = "completed"  # the gate finished; `verdict` is populated
     ERROR = "error"  # the run failed (bad strategy, bad config); see `error`
 
@@ -63,6 +74,7 @@ class RunResponse(BaseModel):
     progress: ProgressInfo | None = None
     verdict: Verdict | None = None
     error: str | None = None
+    note: str | None = None  # the generator's rationale (when NL-generated)
 
 
 class RunSummary(BaseModel):

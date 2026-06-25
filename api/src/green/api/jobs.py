@@ -95,6 +95,8 @@ class _Job:
             verdict=self.verdict,
             error=self.error,
             note=self.note,
+            prompt=self.prompt,
+            source=self.request.source,
         )
 
 
@@ -142,6 +144,8 @@ class JobRunner:
 
     def _start(self, user_id: str, job: _Job) -> str:
         self._store.create(job.id, user_id, job.request)
+        if job.prompt is not None:
+            self._store.update(job.id, prompt=job.prompt)  # surface it in lists/sidebar now
         self._jobs[job.id] = job
         self._evict_finished()
         task = asyncio.create_task(self._run(job))
@@ -208,10 +212,10 @@ class JobRunner:
             # and notify subscribers safely.
             loop.call_soon_threadsafe(self._publish_progress, job, progress)
 
-        def on_generated(note: str) -> None:
+        def on_generated(note: str, request: RunRequest) -> None:
             # Generation finished; flip GENERATING → RUNNING and surface the
-            # generator's rationale, from the worker thread.
-            loop.call_soon_threadsafe(self._publish_generated, job, note)
+            # generator's rationale + the code it wrote, from the worker thread.
+            loop.call_soon_threadsafe(self._publish_generated, job, note, request)
 
         # Ordering note: the last on_progress is scheduled (call_soon_threadsafe)
         # before _execute returns, and the to_thread completion that resumes this
@@ -232,7 +236,10 @@ class JobRunner:
             self._finish(job)
 
     def _execute(
-        self, job: _Job, on_progress: ProgressHook, on_generated: Callable[[str], None]
+        self,
+        job: _Job,
+        on_progress: ProgressHook,
+        on_generated: Callable[[str, RunRequest], None],
     ) -> Verdict:
         # Runs on a worker thread (generation does network I/O; the sandboxed gate
         # spawns child processes — neither belongs on the event loop).
@@ -241,7 +248,7 @@ class JobRunner:
             assert job.prompt is not None
             gen, _cfg = generate_validated(
                 job.prompt,
-                job.tier or "pro",
+                job.tier or "free",
                 anthropic_key=self._anthropic_key,
                 gemini_key=self._gemini_key,
                 gemini_model=self._gemini_model,
@@ -254,7 +261,7 @@ class JobRunner:
                 train_size=_GEN_TRAIN,
                 test_size=_GEN_TEST,
             )
-            on_generated(gen.rationale)
+            on_generated(gen.rationale, request)
 
         adapter, dataset = build_adapter(request.adapter)
         factory = make_strategy_factory(request)
@@ -281,10 +288,11 @@ class JobRunner:
         for queue in job.subscribers:
             queue.put_nowait(job)
 
-    def _publish_generated(self, job: _Job, note: str) -> None:
+    def _publish_generated(self, job: _Job, note: str, request: RunRequest) -> None:
         job.note = note
+        job.request = request  # the real generated code (replaces the placeholder)
         job.state = RunState.RUNNING
-        self._store.update(job.id, state=RunState.RUNNING, note=note)
+        self._store.update(job.id, state=RunState.RUNNING, note=note, request=request)
         for queue in job.subscribers:
             queue.put_nowait(job)
 

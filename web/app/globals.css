@@ -116,6 +116,27 @@
     0 0 0 1px color-mix(in oklab, var(--color-accent), transparent 72%);
 }
 
+/* Form control used across the Backtester Lab. */
+.lab-input {
+  width: 100%;
+  height: 2.25rem;
+  border-radius: 0.5rem;
+  border: 1px solid var(--color-line);
+  background-color: color-mix(in oklab, var(--color-bg), transparent 40%);
+  padding: 0 0.625rem;
+  font-size: 0.8125rem;
+  color: var(--color-text-dim);
+}
+.lab-input:focus {
+  outline: none;
+  border-color: color-mix(in oklab, var(--color-accent), transparent 50%);
+}
+textarea.lab-input {
+  height: auto;
+  padding: 0.5rem 0.625rem;
+  line-height: 1.5;
+}
+
 /* Translucent, blurred, lit-edge surface for floating elements. */
 .glass {
   background-color: color-mix(in oklab, var(--color-surface), transparent 26%);

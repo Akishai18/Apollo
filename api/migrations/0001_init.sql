@@ -18,6 +18,7 @@ create table if not exists public.runs (
     verdict_json  jsonb,
     error         text,
     note          text,  -- generator rationale (natural-language runs)
+    prompt        text,  -- original NL prompt (natural-language runs)
     created_at    timestamptz not null default now(),
     updated_at    timestamptz not null default now()
 );

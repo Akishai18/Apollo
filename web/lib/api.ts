@@ -51,6 +51,28 @@ export type RunSnapshot = {
   verdict: ApiVerdict | null;
   error: string | null;
   note: string | null; // the generator's rationale (natural-language runs)
+  prompt: string | null; // the original NL prompt (natural-language runs)
+  source: string | null; // the strategy source that ran (detail view)
+};
+
+// Lean row for lists/sidebar (GET /runs) — no full verdict, but enough verdict
+// metrics + a downsampled OOS equity spark to render a rich table in one call.
+export type RunSummary = {
+  id: string;
+  state: RunState;
+  title: string | null;
+  symbol: string | null;
+  kind: string | null;
+  passed: boolean | null;
+  reason: string | null;
+  oos_sharpe: number | null;
+  edge_retained: number | null;
+  max_dd: number | null;
+  spark: number[];
+  progress: { completed: number; total: number } | null;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
 };
 
 /*
@@ -66,7 +88,9 @@ export const APOLLO_TIERS: { key: TierKey; name: string; blurb: string }[] = [
   { key: "pro", name: "Apollo Prime", blurb: "Our most capable model" },
 ];
 
-export const DEFAULT_TIER: TierKey = "pro";
+// Free tier (Apollo Spark → Gemini) is the only one configured for now; default
+// to it so generations route to Gemini rather than a key-less paid tier.
+export const DEFAULT_TIER: TierKey = "free";
 
 export type ApiTemplate = {
   key: string;
@@ -82,6 +106,21 @@ export async function getTemplates(): Promise<ApiTemplate[]> {
   const res = await fetch(`${API_BASE}/templates`);
   if (!res.ok) throw new Error(`templates: ${res.status}`);
   return (await res.json()) as ApiTemplate[];
+}
+
+// The caller's runs, newest activity first (GET /runs returns lean summaries).
+export async function listRuns(): Promise<RunSummary[]> {
+  const res = await fetch(`${API_BASE}/runs`);
+  if (!res.ok) throw new Error(`runs: ${res.status}`);
+  const rows = (await res.json()) as RunSummary[];
+  return rows.sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
+}
+
+// One run with its full verdict + source/prompt (GET /runs/{id}).
+export async function getRun(id: string): Promise<RunSnapshot> {
+  const res = await fetch(`${API_BASE}/runs/${id}`);
+  if (!res.ok) throw new Error(`run: ${res.status}`);
+  return (await res.json()) as RunSnapshot;
 }
 
 export async function submitRun(request: Record<string, unknown>): Promise<{ id: string }> {

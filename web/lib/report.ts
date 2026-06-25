@@ -10,9 +10,19 @@ import type { RunScenario, Sweep } from "./mock";
 const pct = (x: number, sign = false) => `${sign && x > 0 ? "+" : ""}${(x * 100).toFixed(1)}%`;
 const mean = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0);
 
-export function verdictToReport(v: ApiVerdict, strategyName: string): RunScenario {
+export function verdictToReport(
+  v: ApiVerdict,
+  strategyName: string,
+  windowIndex?: number,
+): RunScenario {
   const windows = v.windows;
-  const last = windows[windows.length - 1];
+  // Which window drives the per-window panels (equity / sweep / chosen params).
+  // Defaults to the last window; the visualizer passes an index to scrub.
+  const idx =
+    windowIndex != null && windowIndex >= 0 && windowIndex < windows.length
+      ? windowIndex
+      : windows.length - 1;
+  const last = windows[idx];
 
   const params = Object.entries(last?.chosen_params ?? {}).map(([k, val]) => ({
     k,

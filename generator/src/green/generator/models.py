@@ -103,7 +103,9 @@ TIERS: dict[str, TierConfig] = {
     ),
 }
 
-DEFAULT_TIER = "pro"
+# Free tier (Gemini) is the only configured provider for now; make it the
+# fallback for unknown/missing tiers too. Bump to "pro" once paid keys are set.
+DEFAULT_TIER = "free"
 
 
 def tier_config(tier: str) -> TierConfig:

@@ -1,6 +1,5 @@
-import { redirect } from "next/navigation";
+import { AuthScreen } from "@/components/auth-screen";
 
-// Auth comes later — for now, signing up drops you straight into the workspace.
 export default function SignupPage() {
-  redirect("/app");
+  return <AuthScreen mode="signup" />;
 }

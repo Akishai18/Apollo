@@ -203,6 +203,24 @@ def test_generate_streams_to_completion_with_rationale_over_ws(client: TestClien
     assert final["note"]  # the rationale streamed through to the client
 
 
+def test_generate_persists_prompt_and_generated_source(client: TestClient) -> None:
+    """The detail view can reconstruct a run: the original NL prompt, the code
+    Apollo actually generated (not the placeholder), and a title for lists."""
+    prompt = "mean reversion on SYN, fade moves away from the average"
+    submit = _post(client, "/generate", {"prompt": prompt, "tier": "free"})
+    run_id = cast("str", _json(submit)["id"])
+    final = _wait_for_terminal(client, run_id)
+
+    assert final["state"] == "completed"
+    assert final["prompt"] == prompt
+    assert final["source"] and "pending generation" not in final["source"]
+    assert "Strategy" in final["source"]  # real strategy code reached the detail view
+
+    rows = _json_list(_get(client, "/runs"))
+    row = next(r for r in rows if r["id"] == run_id)
+    assert row["title"] == prompt[:47] + "…"  # truncated prompt as the list label
+
+
 def test_generate_rejects_empty_prompt(client: TestClient) -> None:
     assert _post(client, "/generate", {"prompt": "", "tier": "pro"}).status_code == 422
 

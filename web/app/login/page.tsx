@@ -1,6 +1,5 @@
-import { redirect } from "next/navigation";
+import { AuthScreen } from "@/components/auth-screen";
 
-// Auth comes later — for now, entering the app drops you straight into the workspace.
 export default function LoginPage() {
-  redirect("/app");
+  return <AuthScreen mode="login" />;
 }

@@ -48,7 +48,7 @@ class GenerateRequest(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     prompt: str = Field(min_length=1)
-    tier: str = "pro"
+    tier: str = "free"
 
 
 class RunState(StrEnum):
@@ -75,6 +75,8 @@ class RunResponse(BaseModel):
     verdict: Verdict | None = None
     error: str | None = None
     note: str | None = None  # the generator's rationale (when NL-generated)
+    prompt: str | None = None  # the original NL prompt (when NL-generated)
+    source: str | None = None  # the strategy source that ran (for the detail view)
 
 
 class RunSummary(BaseModel):
@@ -86,8 +88,17 @@ class RunSummary(BaseModel):
 
     id: str
     state: RunState
+    title: str | None = None  # short human label (the prompt, else the class name)
+    symbol: str | None = None  # primary traded symbol (from the grid), for the badge
+    kind: str | None = None  # strategy family, derived from the class name
     passed: bool | None = None  # from the verdict, when completed
     reason: str | None = None  # the legible one-liner, when completed
+    # At-a-glance verdict metrics (populated once completed) so the list view can
+    # render a rich table without N detail fetches.
+    oos_sharpe: float | None = None  # held-out Sharpe, mean across windows
+    edge_retained: float | None = None  # test/train Sharpe ratio (0..1)
+    max_dd: float | None = None  # worst held-out drawdown across windows (fraction)
+    spark: tuple[float, ...] = ()  # downsampled held-out equity, for a mini chart
     progress: ProgressInfo | None = None
     error: str | None = None
     created_at: str = ""

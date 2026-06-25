@@ -17,6 +17,7 @@ the database — defense in depth.
 
 from __future__ import annotations
 
+import re
 import sqlite3
 import threading
 from abc import ABC, abstractmethod
@@ -38,8 +39,16 @@ class StoredRun:
     verdict: Verdict | None = None
     error: str | None = None
     note: str | None = None  # generator rationale (NL-generated runs)
+    prompt: str | None = None  # original NL prompt (NL-generated runs)
     created_at: str = ""
     updated_at: str = ""
+
+    def _title(self) -> str:
+        """A short human label for lists/sidebar: the prompt, else the class."""
+        if self.prompt:
+            p = self.prompt.strip().replace("\n", " ")
+            return p if len(p) <= 48 else f"{p[:47]}…"
+        return self.request.class_name or "Strategy"
 
     def to_response(self) -> RunResponse:
         return RunResponse(
@@ -49,14 +58,24 @@ class StoredRun:
             verdict=self.verdict,
             error=self.error,
             note=self.note,
+            prompt=self.prompt,
+            source=self.request.source,
         )
 
     def to_summary(self) -> RunSummary:
+        v = self.verdict
         return RunSummary(
             id=self.id,
             state=self.state,
-            passed=self.verdict.passed if self.verdict is not None else None,
-            reason=self.verdict.reason if self.verdict is not None else None,
+            title=self._title(),
+            symbol=_symbol(self.request),
+            kind=_kind_from_class(self.request.class_name),
+            passed=v.passed if v is not None else None,
+            reason=v.reason if v is not None else None,
+            oos_sharpe=v.test_sharpe if v is not None else None,
+            edge_retained=v.retention if v is not None else None,
+            max_dd=(max((w.test.max_drawdown for w in v.windows), default=0.0) if v else None),
+            spark=_oos_equity(v) if v is not None else (),
             progress=self.progress,
             error=self.error,
             created_at=self.created_at,
@@ -66,6 +85,42 @@ class StoredRun:
 
 def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _downsample(xs: list[float], n: int = 28) -> tuple[float, ...]:
+    if len(xs) <= n:
+        return tuple(xs)
+    step = (len(xs) - 1) / (n - 1)
+    return tuple(xs[round(i * step)] for i in range(n))
+
+
+def _oos_equity(verdict: Verdict) -> tuple[float, ...]:
+    """Held-out equity across all windows, each segment rebased to continue from
+    the last — one continuous out-of-sample curve — then downsampled for a spark."""
+    series: list[float] = []
+    last: float | None = None
+    for w in verdict.windows:
+        seg = [v for _, v in w.test_equity]
+        if not seg:
+            continue
+        if last is not None and seg[0] != 0:
+            factor = last / seg[0]
+            seg = [v * factor for v in seg]
+        series.extend(seg)
+        last = series[-1]
+    return _downsample(series)
+
+
+def _kind_from_class(name: str | None) -> str | None:
+    if not name:
+        return None
+    words = re.findall(r"[A-Z][a-z0-9]*", name)
+    return " ".join(w.lower() for w in words) if words else name.lower()
+
+
+def _symbol(request: RunRequest) -> str | None:
+    vals = request.grid.get("symbol")
+    return str(vals[0]) if vals else None
 
 
 class RunStore(ABC):
@@ -87,6 +142,8 @@ class RunStore(ABC):
         verdict: Verdict | None = None,
         error: str | None = None,
         note: str | None = None,
+        prompt: str | None = None,
+        request: RunRequest | None = None,
     ) -> None: ...
 
     @abstractmethod
@@ -133,6 +190,8 @@ class InMemoryRunStore(RunStore):
         verdict: Verdict | None = None,
         error: str | None = None,
         note: str | None = None,
+        prompt: str | None = None,
+        request: RunRequest | None = None,
     ) -> None:
         with self._lock:
             run = self._runs.get(run_id)
@@ -148,6 +207,10 @@ class InMemoryRunStore(RunStore):
                 run.error = error
             if note is not None:
                 run.note = note
+            if prompt is not None:
+                run.prompt = prompt
+            if request is not None:
+                run.request = request
             run.updated_at = _now_iso()
 
     def list_for_user(self, user_id: str) -> list[StoredRun]:
@@ -165,6 +228,7 @@ CREATE TABLE IF NOT EXISTS runs (
     verdict_json TEXT,
     error        TEXT,
     note         TEXT,
+    prompt       TEXT,
     created_at   TEXT NOT NULL,
     updated_at   TEXT NOT NULL
 );
@@ -182,10 +246,12 @@ class SqliteRunStore(RunStore):
         self._lock = threading.Lock()
         with self._lock:
             self._conn.executescript(_SCHEMA)
-            # Additive migration for DBs created before `note` existed.
+            # Additive migrations for DBs created before these columns existed.
             cols = {r[1] for r in self._conn.execute("PRAGMA table_info(runs)").fetchall()}
             if "note" not in cols:
                 self._conn.execute("ALTER TABLE runs ADD COLUMN note TEXT")
+            if "prompt" not in cols:
+                self._conn.execute("ALTER TABLE runs ADD COLUMN prompt TEXT")
             self._conn.commit()
 
     def create(self, run_id: str, user_id: str, request: RunRequest) -> StoredRun:
@@ -211,7 +277,7 @@ class SqliteRunStore(RunStore):
         with self._lock:
             cursor = self._conn.execute(
                 "SELECT id, user_id, state, request_json, progress_json, verdict_json, "
-                "error, note, created_at, updated_at FROM runs WHERE id = ?",
+                "error, note, prompt, created_at, updated_at FROM runs WHERE id = ?",
                 (run_id,),
             )
             row = cursor.fetchone()
@@ -226,6 +292,8 @@ class SqliteRunStore(RunStore):
         verdict: Verdict | None = None,
         error: str | None = None,
         note: str | None = None,
+        prompt: str | None = None,
+        request: RunRequest | None = None,
     ) -> None:
         sets: list[str] = []
         values: list[Any] = []
@@ -244,6 +312,12 @@ class SqliteRunStore(RunStore):
         if note is not None:
             sets.append("note = ?")
             values.append(note)
+        if prompt is not None:
+            sets.append("prompt = ?")
+            values.append(prompt)
+        if request is not None:
+            sets.append("request_json = ?")
+            values.append(request.model_dump_json())
         sets.append("updated_at = ?")
         values.append(_now_iso())
         values.append(run_id)
@@ -255,7 +329,8 @@ class SqliteRunStore(RunStore):
         with self._lock:
             cursor = self._conn.execute(
                 "SELECT id, user_id, state, request_json, progress_json, verdict_json, "
-                "error, note, created_at, updated_at FROM runs WHERE user_id = ? ORDER BY created_at",
+                "error, note, prompt, created_at, updated_at "
+                "FROM runs WHERE user_id = ? ORDER BY created_at",
                 (user_id,),
             )
             rows = cursor.fetchall()
@@ -264,13 +339,14 @@ class SqliteRunStore(RunStore):
     @staticmethod
     def _row_to_run(row: tuple[Any, ...]) -> StoredRun:
         id_, user_id, state, request_json = row[0], row[1], row[2], row[3]
-        progress_json, verdict_json, error, note, created, updated = (
+        progress_json, verdict_json, error, note, prompt, created, updated = (
             row[4],
             row[5],
             row[6],
             row[7],
             row[8],
             row[9],
+            row[10],
         )
         progress = (
             ProgressInfo.model_validate_json(cast("str", progress_json))
@@ -291,6 +367,7 @@ class SqliteRunStore(RunStore):
             verdict=verdict,
             error=cast("str | None", error),
             note=cast("str | None", note),
+            prompt=cast("str | None", prompt),
             created_at=cast("str", created),
             updated_at=cast("str", updated),
         )

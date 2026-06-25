@@ -44,7 +44,7 @@ class Settings(BaseModel):
     anthropic_api_key: str | None = None  # paid tiers (Sonnet / Opus)
     gemini_api_key: str | None = None  # free tier
     gemini_model: str | None = None  # optional override of the free model id
-    default_tier: str = "pro"
+    default_tier: str = "free"
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -70,7 +70,7 @@ class Settings(BaseModel):
             or os.environ.get("GEMINI_API_KEY")
             or None,
             gemini_model=os.environ.get("GREEN_GEMINI_MODEL") or None,
-            default_tier=os.environ.get("GREEN_DEFAULT_TIER", "pro"),
+            default_tier=os.environ.get("GREEN_DEFAULT_TIER", "free"),
         )
 
     @property

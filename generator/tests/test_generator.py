@@ -60,6 +60,16 @@ def test_validate_catches_contract_violations() -> None:
     )
     assert any("os" in e for e in bad_import)
 
+    bad_sma = validate_source(
+        "from green.core import Strategy\n"
+        "from green.core.indicators import sma\n"
+        "class S(Strategy):\n"
+        "    def on_tick(self, view):\n"
+        "        value = sma(20)\n"
+        "        return []\n"
+    )
+    assert any("sma() expects 2 positional arguments" in e for e in bad_sma)
+
 
 def test_tier_map_and_default() -> None:
     assert tier_config("free").provider == "gemini"
@@ -92,3 +102,38 @@ def test_repair_loop_raises_when_unfixable(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr("green.generator.generate.build_provider", fake_build_provider)
     with pytest.raises(Exception, match="valid strategy"):
         generate_validated("anything", "pro")
+
+
+def test_repair_loop_feeds_indicator_arity_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str | None] = []
+
+    class RepairsIndicator:
+        def generate(
+            self, prompt: str, *, model: str, effort: str, feedback: str | None = None
+        ) -> GeneratedStrategy:
+            calls.append(feedback)
+            if feedback is None:
+                return GeneratedStrategy(
+                    class_name="BrokenSma",
+                    rationale="bad first draft",
+                    source=(
+                        "from green.core import Strategy\n"
+                        "from green.core.indicators import sma\n"
+                        "class BrokenSma(Strategy):\n"
+                        "    def on_tick(self, view):\n"
+                        "        value = sma(20)\n"
+                        "        return []\n"
+                    ),
+                )
+            return GeneratedStrategy(class_name="Probe", rationale="fixed", source=_GOOD)
+
+    def fake_build_provider(*args: object, **kwargs: object) -> RepairsIndicator:
+        return RepairsIndicator()
+
+    monkeypatch.setattr("green.generator.generate.build_provider", fake_build_provider)
+
+    gen, _cfg = generate_validated("moving average", "free")
+
+    assert gen.class_name == "Probe"
+    assert calls[0] is None
+    assert calls[1] is not None and "sma() expects 2 positional arguments" in calls[1]

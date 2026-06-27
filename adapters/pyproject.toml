@@ -3,7 +3,12 @@ name = "green-adapters"
 version = "0.1.0"
 description = "Pluggable environment adapters. Each owns everything environment-specific."
 requires-python = ">=3.12"
-dependencies = ["green-core", "polars>=1.0"]
+dependencies = [
+    "green-core",
+    "polars>=1.0",
+    "yfinance>=0.2.66",
+    "databricks-sql-connector>=3.0",
+]
 
 [build-system]
 requires = ["hatchling"]

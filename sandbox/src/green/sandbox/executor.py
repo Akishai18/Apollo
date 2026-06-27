@@ -324,8 +324,8 @@ class DockerExecutor(_PipeExecutor):
         self._container = ""
 
     @classmethod
-    def is_available(cls, docker_bin: str = "docker") -> bool:
-        """True if a Docker daemon is reachable — tests gate on this."""
+    def is_available(cls, docker_bin: str = "docker", image: str = "green-sandbox:latest") -> bool:
+        """True if a Docker daemon and the sandbox image are available."""
         try:
             result = subprocess.run(
                 [docker_bin, "info"],
@@ -336,7 +336,19 @@ class DockerExecutor(_PipeExecutor):
             )
         except (OSError, subprocess.SubprocessError):
             return False
-        return result.returncode == 0
+        if result.returncode != 0:
+            return False
+        try:
+            image_result = subprocess.run(
+                [docker_bin, "image", "inspect", image],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return image_result.returncode == 0
 
     def _build_command(self, container: str) -> list[str]:
         """The hardened `docker run` invocation — the wall this executor promises.

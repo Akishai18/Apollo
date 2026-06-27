@@ -18,12 +18,17 @@ gate, or the store interface changing.
 from __future__ import annotations
 
 import asyncio
+import json
+import os
+import re
 import uuid
 from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass, field
+from typing import Any
 
 from green.api.models import (
     AdapterSpec,
+    DecayAlert,
     ProgressInfo,
     RunKind,
     RunRequest,
@@ -44,6 +49,7 @@ from green.api.store import RunStore, StoredRun, kind_from_class, symbol_of
 from green.core import Verdict, WalkForwardProgress
 from green.core.overfit.gate import ProgressHook, run_walk_forward
 from green.generator import GenerationError, generate_validated
+from green.sandbox import SandboxError
 
 # Put on a subscriber's queue to signal "no more events" (the run is terminal).
 _SENTINEL = object()
@@ -56,6 +62,8 @@ _GEN_PREVIEW_ADAPTER = AdapterSpec(
 )
 _GEN_PREVIEW_TRAIN = 80
 _GEN_PREVIEW_TEST = 50
+_GEN_MARKET_PREVIEW_TRAIN = 120
+_GEN_MARKET_PREVIEW_TEST = 60
 
 # Formal defaults for generated strategies once the user explicitly validates.
 _GEN_FORMAL_ADAPTER = AdapterSpec(
@@ -63,6 +71,8 @@ _GEN_FORMAL_ADAPTER = AdapterSpec(
 )
 _GEN_FORMAL_TRAIN = 200
 _GEN_FORMAL_TEST = 100
+_GEN_MARKET_FORMAL_TRAIN = 200
+_GEN_MARKET_FORMAL_TEST = 100
 
 # A throwaway request stored at generation-job creation, replaced once the
 # generator produces real source (the store row only needs *a* valid request).
@@ -93,6 +103,7 @@ class _Job:
     error: str | None = None
     note: str | None = None  # generator rationale (NL runs)
     prompt: str | None = None  # NL prompt (generation jobs)
+    generation_prompt: str | None = None  # internal prompt, may include revision context
     tier: str | None = None  # branded tier (generation jobs)
     subscribers: set[asyncio.Queue[object]] = field(default_factory=_new_subscribers)
     done: asyncio.Event = field(default_factory=asyncio.Event)
@@ -194,7 +205,9 @@ class JobRunner:
         self._copy_label(source, new_id)
         return new_id
 
-    def submit_generation(self, user_id: str, prompt: str, tier: str) -> str:
+    def submit_generation(
+        self, user_id: str, prompt: str, tier: str, *, generation_prompt: str | None = None
+    ) -> str:
         """Submit a natural-language run: generate the strategy, then gate it."""
         return self._start(
             user_id,
@@ -203,6 +216,7 @@ class JobRunner:
                 user_id=user_id,
                 request=_PLACEHOLDER_REQUEST,
                 prompt=prompt,
+                generation_prompt=generation_prompt,
                 tier=tier,
             ),
         )
@@ -282,7 +296,84 @@ class JobRunner:
             latest_validation=latest_validation,
             versions_count=len(versions),
             runs_count=len(runs),
+            promoted=any(v.promoted for v in versions),
         )
+
+    def promote_strategy(self, user_id: str, strategy_id: str, promoted: bool) -> bool:
+        """Promote/demote a strategy by toggling its latest version's flag. Promoted
+        versions are what scheduled re-validation re-runs on fresh data."""
+        versions = self._store.list_versions_for_strategy(strategy_id, user_id)
+        if not versions:
+            return False
+        latest = max(versions, key=lambda v: v.version_number)
+        # demote any other promoted versions so a strategy has one champion
+        for v in versions:
+            if v.promoted and v.id != latest.id:
+                self._store.set_version_promoted(v.id, user_id, False)
+        return self._store.set_version_promoted(latest.id, user_id, promoted) is not None
+
+    def revalidate_promoted(self, user_id: str) -> list[str]:
+        """Re-run formal validation for every promoted version (on current data).
+        Returns the new run ids. Powers scheduled decay monitoring."""
+        run_ids: list[str] = []
+        for version in self._store.list_promoted_versions(user_id):
+            run_id = self.submit_version(user_id, version.id, RunKind.VALIDATION)
+            if run_id is not None:
+                run_ids.append(run_id)
+        return run_ids
+
+    def decay_alerts(self, user_id: str, min_oos_sharpe: float) -> list[DecayAlert]:
+        """Promoted strategies whose latest completed validation breached the bar
+        (rejected out-of-sample, or held-out Sharpe below `min_oos_sharpe`)."""
+        alerts: list[DecayAlert] = []
+        seen: set[str] = set()
+        for version in self._store.list_promoted_versions(user_id):
+            sid = version.strategy_id
+            if sid in seen:
+                continue
+            seen.add(sid)
+            strategy = self._store.get_strategy_for_user(sid, user_id)
+            if strategy is None:
+                continue
+            validations = [
+                r
+                for r in self._store.list_runs_for_strategy(sid, user_id)
+                if r.request.run_kind is RunKind.VALIDATION
+                and r.state is RunState.COMPLETED
+                and r.verdict is not None
+            ]
+            if not validations:
+                vals = version.grid.get("symbol", [])
+                alerts.append(
+                    DecayAlert(
+                        strategy_id=sid,
+                        title=strategy.title,
+                        symbol=str(vals[0]) if vals else None,
+                        reason="promoted but never validated",
+                    )
+                )
+                continue
+            latest = max(validations, key=lambda r: r.updated_at)
+            v = latest.verdict
+            assert v is not None
+            reason = ""
+            if not v.passed:
+                reason = "rejected out-of-sample"
+            elif v.test_sharpe < min_oos_sharpe:
+                reason = f"held-out Sharpe {v.test_sharpe:.2f} below {min_oos_sharpe:.2f}"
+            if reason:
+                alerts.append(
+                    DecayAlert(
+                        strategy_id=sid,
+                        title=strategy.title,
+                        symbol=symbol_of(latest.request),
+                        passed=v.passed,
+                        oos_sharpe=v.test_sharpe,
+                        retention=v.retention,
+                        reason=reason,
+                    )
+                )
+        return alerts
 
     async def stream(self, run_id: str, user_id: str) -> AsyncGenerator[RunResponse, None] | None:
         """Ownership-checked stream. None if the run is unknown or not the user's.
@@ -360,6 +451,7 @@ class JobRunner:
         else:
             job.state, job.verdict = RunState.COMPLETED, verdict
             self._store.update(job.id, state=RunState.COMPLETED, verdict=verdict)
+            await asyncio.to_thread(_log_mlflow, job, verdict)  # best-effort, off the loop
         finally:
             self._finish(job)
 
@@ -371,30 +463,70 @@ class JobRunner:
     ) -> Verdict:
         # Runs on a worker thread (generation does network I/O; the sandboxed gate
         # spawns child processes — neither belongs on the event loop).
-        request = job.request
         if job.is_generation:
-            assert job.prompt is not None
+            return self._generate_and_run(job, on_progress, on_generated)
+        return self._run_gate(
+            job.request,
+            allow_fallback=job.request.run_kind is RunKind.VALIDATION,
+            on_progress=on_progress,
+        )
+
+    def _generate_and_run(
+        self,
+        job: _Job,
+        on_progress: ProgressHook,
+        on_generated: Callable[[str, RunRequest, RunRequest], None],
+    ) -> Verdict:
+        """Generate → preview-run → on a sandbox crash, regenerate with the crash
+        fed back as guidance, up to the runtime-repair budget. Iron-clad: the user
+        never sees a raw traceback — either a working strategy or a clean message."""
+        assert job.prompt is not None
+        feedback: str | None = None
+        for _ in range(_GEN_RUNTIME_REPAIRS + 1):
             gen, _cfg = generate_validated(
-                job.prompt,
+                job.generation_prompt or job.prompt,
                 job.tier or "free",
                 anthropic_key=self._anthropic_key,
                 gemini_key=self._gemini_key,
                 gemini_model=self._gemini_model,
+                extra_feedback=feedback,
             )
-            request = RunRequest(
+            grid = _grid_with_prompt_symbol(gen.grid(), job.prompt)
+            full = RunRequest(
                 run_kind=RunKind.BACKTEST,
                 source=gen.source,
                 class_name=gen.class_name or None,
-                grid=gen.grid(),
-                adapter=_GEN_PREVIEW_ADAPTER,
-                train_size=_GEN_PREVIEW_TRAIN,
-                test_size=_GEN_PREVIEW_TEST,
+                grid=grid,
+                adapter=_generated_adapter(grid),
+                train_size=_generated_train_size(grid),
+                test_size=_generated_test_size(grid),
                 min_oos_trades=0,
             )
-            on_generated(gen.rationale, request, _preview_generated_request(request))
-            request = _preview_generated_request(request)
+            preview = _preview_generated_request(full)
+            on_generated(gen.rationale, full, preview)
+            try:
+                return self._run_gate(preview, allow_fallback=True, on_progress=on_progress)
+            except SandboxError as exc:
+                feedback = _runtime_feedback(exc)  # the generated code crashed — fix it
+        raise GenerationError(
+            "Apollo couldn't produce a working strategy for this after several attempts — "
+            "try rephrasing the idea or simplifying the rules."
+        )
 
-        adapter, dataset = build_adapter(request.adapter)
+    def _run_gate(
+        self, request: RunRequest, *, allow_fallback: bool, on_progress: ProgressHook
+    ) -> Verdict:
+        # Iron-tight: a generated/validation run must never hard-error because a
+        # market-data symbol can't be loaded (typo, odd phrasing, delisted, no
+        # rows). Fall back to the synthetic series so the user still gets a verdict.
+        try:
+            adapter, dataset = build_adapter(request.adapter)
+        except Exception:
+            if allow_fallback and request.adapter.name == "market_data":
+                request = _synthetic_fallback(request)
+                adapter, dataset = build_adapter(request.adapter)
+            else:
+                raise
         factory = make_strategy_factory(request)
         return run_walk_forward(
             factory,
@@ -483,24 +615,224 @@ def _title_from_prompt(prompt: str) -> str:
     return compact if len(compact) <= 80 else f"{compact[:79]}…"
 
 
-def _preview_generated_request(request: RunRequest) -> RunRequest:
+# Common words / indicator acronyms that look like tickers but aren't, so we
+# never route them to a market-data fetch. (A wrong guess that slips through is
+# still caught by the synthetic fallback in _execute — this just reduces noise.)
+_SYMBOL_STOPWORDS = frozenset(
+    {
+        # articles / prepositions / conjunctions / verbs that scan as tickers
+        "A", "AN", "AND", "AS", "AT", "BE", "BY", "DO", "FOR", "GO", "IF", "IN",
+        "IS", "IT", "ME", "MY", "NO", "OF", "ON", "OR", "SO", "TO", "UP", "US", "WE",
+        "THE", "WHEN", "WITH", "THAT", "THIS", "FROM", "INTO", "OVER", "THEN",
+        # strategy / trading vocabulary
+        "BUY", "SELL", "EXIT", "HOLD", "LONG", "SHORT", "FAST", "SLOW", "MEAN",
+        "STOCK", "STOCKS", "SHARE", "SHARES", "EQUITY", "PRICE", "TREND", "CROSS",
+        "BAND", "STOP", "RISK", "PROFIT", "LOSS", "TRADE", "TRADES", "BUILD",
+        "STRATEGY", "AROUND", "MAXIMIZE", "MARKET", "DAILY", "WEEKLY", "AVERAGE",
+        # indicator acronyms (not tickers)
+        "MA", "SMA", "EMA", "WMA", "RSI", "ATR", "MACD", "VWAP", "ADX", "BB",
+        "OHLC", "PNL", "ROI", "ETF", "AI", "ML",
+    }
+)
+
+_TICKER = r"[A-Za-z][A-Za-z.\-]{0,5}"
+
+
+_BEFORE_NOUN = re.compile(rf"\b({_TICKER})\s+(?:stock|shares?|equity|etf|index)\b", re.IGNORECASE)
+_AFTER_KEYWORD = re.compile(rf"\b(?:ticker|symbol|on|trade|trading)\s+({_TICKER})\b", re.IGNORECASE)
+_UPPER_TOKEN = re.compile(r"\b[A-Z][A-Z0-9.\-]{1,5}\b")
+
+
+def _plausible_symbol(candidate: str) -> bool:
+    if candidate in _SYMBOL_STOPWORDS:
+        return False
+    return bool(re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,5}", candidate))
+
+
+def _prompt_symbol(prompt: str) -> str | None:
+    """Best-effort ticker extraction from a natural-language prompt. Ordered from
+    most to least explicit; a wrong guess is harmless (the run falls back to a
+    synthetic series rather than erroring)."""
+    # 1) "<TICKER> stock/shares/equity" — the ticker precedes the noun ("sls stock")
+    # 2) "ticker/symbol/on/trade <TICKER>" — the ticker follows the keyword
+    for pattern in (_BEFORE_NOUN, _AFTER_KEYWORD):
+        for m in pattern.finditer(prompt):
+            c = m.group(1).upper()
+            if _plausible_symbol(c):
+                return c
+    # 3) an explicit upper-case ticker token (AAPL, SPY, KO)
+    for token in _UPPER_TOKEN.findall(prompt):
+        if _plausible_symbol(token):
+            return token
+    return None
+
+
+def _grid_with_prompt_symbol(
+    grid: dict[str, list[Any]], prompt: str
+) -> dict[str, list[Any]]:
+    symbol = _prompt_symbol(prompt)
+    current = _grid_symbols(grid)
+    if symbol is None or any(_is_real_symbol(s) for s in current):
+        return grid
+    return {**grid, "symbol": [symbol]}
+
+
+def _grid_symbols(grid: dict[str, list[Any]]) -> tuple[str, ...]:
+    values = grid.get("symbol", [])
+    return tuple(str(value).strip().upper() for value in values if str(value).strip())
+
+
+def _real_symbols(grid: dict[str, list[Any]]) -> tuple[str, ...]:
+    return tuple(symbol for symbol in _grid_symbols(grid) if _is_real_symbol(symbol))
+
+
+def _is_real_symbol(symbol: str) -> bool:
+    return symbol != "SYN" and bool(re.fullmatch(r"[A-Z][A-Z0-9.-]{0,6}", symbol))
+
+
+def _generated_adapter(grid: dict[str, list[Any]]) -> AdapterSpec:
+    symbols = _real_symbols(grid)
+    if not symbols:
+        return _GEN_PREVIEW_ADAPTER
+    costs = {"fee_per_share": 0.005, "slippage_bps": 1.0, "max_position": 1000.0}
+    # Prefer the governed Delta source when Databricks is configured; else Yahoo.
+    if os.environ.get("GREEN_DATABRICKS_HOST"):
+        return AdapterSpec(
+            name="market_data",
+            params={"provider": "delta", "symbols": list(symbols), **costs},
+        )
+    return AdapterSpec(
+        name="market_data",
+        params={
+            "provider": "yahoo",
+            "symbols": list(symbols),
+            "period": "2y",
+            "interval": "1d",
+            "auto_adjust": True,
+            **costs,
+        },
+    )
+
+
+# How many times to regenerate after the generated code crashes in the sandbox
+# before giving up with a clean message (total attempts = this + 1).
+_GEN_RUNTIME_REPAIRS = 2
+
+
+def _log_mlflow(job: _Job, verdict: Verdict) -> None:
+    """Log a completed run to MLflow (params, OOS metrics, source) when a tracking
+    URI is configured. Best-effort: tracking must never break a validation run."""
+    uri = os.environ.get("GREEN_MLFLOW_TRACKING_URI")
+    if not uri:
+        return
+    try:
+        import mlflow  # lazy: only needed when tracking is on
+
+        if uri == "databricks":  # reuse the Delta workspace creds for MLflow auth
+            host = os.environ.get("GREEN_DATABRICKS_HOST", "")
+            os.environ.setdefault("DATABRICKS_HOST", host if host.startswith("http") else f"https://{host}")
+            os.environ.setdefault("DATABRICKS_TOKEN", os.environ.get("GREEN_DATABRICKS_TOKEN", ""))
+        mlflow.set_tracking_uri(uri)
+        mlflow.set_experiment(os.environ.get("GREEN_MLFLOW_EXPERIMENT", "apollo"))
+
+        req = job.request
+        run_name = (job.prompt or req.class_name or "backtest")[:60]
+        with mlflow.start_run(run_name=run_name):
+            mlflow.set_tags(
+                {
+                    "symbol": symbol_of(req) or "SYN",
+                    "adapter": req.adapter.name,
+                    "run_kind": req.run_kind.value,
+                    "tier": job.tier or "n/a",
+                    "passed": str(verdict.passed),
+                }
+            )
+            mlflow.log_params(
+                {
+                    "train_size": req.train_size,
+                    "test_size": req.test_size,
+                    "select_by": req.select_by,
+                    "grid": json.dumps(req.grid)[:500],
+                }
+            )
+            mlflow.log_metrics(
+                {
+                    "oos_sharpe": verdict.test_sharpe,
+                    "is_sharpe": verdict.train_sharpe,
+                    "retention": verdict.retention,
+                    "oos_trades": float(verdict.oos_trades),
+                    "windows": float(len(verdict.windows)),
+                    "passed": 1.0 if verdict.passed else 0.0,
+                }
+            )
+            mlflow.log_text(verdict.reason, "verdict.txt")
+            mlflow.log_text(req.source, "strategy.py")
+    except Exception:
+        pass
+
+
+def _runtime_feedback(exc: SandboxError) -> str:
+    """Turn a sandbox crash into concise guidance the model can act on."""
+    lines = [line.strip() for line in str(exc).splitlines() if line.strip()]
+    detail = lines[-1] if lines else str(exc)
+    return (
+        f"Your previous strategy crashed at runtime: {detail}. Fix this bug. "
+        "Use the MarketView API correctly: history values are sequences (safe for "
+        "len()/indexing) while a single price is a float — never call len() on a "
+        "scalar or index it. Guard against short history at the start of the series. "
+        "Return a corrected strategy."
+    )
+
+
+def _synthetic_fallback(request: RunRequest) -> RunRequest:
+    """Recast a (market-data) request onto the deterministic synthetic series so a
+    run that can't load real data still completes with a verdict."""
+    grid = {**request.grid, "symbol": ["SYN"]}
     return request.model_copy(
         update={
             "adapter": _GEN_PREVIEW_ADAPTER,
+            "grid": grid,
             "train_size": _GEN_PREVIEW_TRAIN,
             "test_size": _GEN_PREVIEW_TEST,
-            "grid": {key: values[:1] for key, values in request.grid.items()},
+        }
+    )
+
+
+def _generated_train_size(grid: dict[str, list[Any]]) -> int:
+    return _GEN_MARKET_PREVIEW_TRAIN if _real_symbols(grid) else _GEN_PREVIEW_TRAIN
+
+
+def _generated_test_size(grid: dict[str, list[Any]]) -> int:
+    return _GEN_MARKET_PREVIEW_TEST if _real_symbols(grid) else _GEN_PREVIEW_TEST
+
+
+def _generated_formal_adapter(grid: dict[str, list[Any]]) -> AdapterSpec:
+    adapter = _generated_adapter(grid)
+    if adapter.name != "market_data":
+        return _GEN_FORMAL_ADAPTER
+    return adapter
+
+
+def _preview_generated_request(request: RunRequest) -> RunRequest:
+    grid = {key: values[:1] for key, values in request.grid.items()}
+    return request.model_copy(
+        update={
+            "adapter": _generated_adapter(grid),
+            "train_size": _generated_train_size(grid),
+            "test_size": _generated_test_size(grid),
+            "grid": grid,
             "min_oos_trades": 0,
         }
     )
 
 
 def _formal_generated_request(request: RunRequest) -> RunRequest:
+    is_market = bool(_real_symbols(request.grid))
     return request.model_copy(
         update={
-            "adapter": _GEN_FORMAL_ADAPTER,
-            "train_size": _GEN_FORMAL_TRAIN,
-            "test_size": _GEN_FORMAL_TEST,
+            "adapter": _generated_formal_adapter(request.grid),
+            "train_size": _GEN_MARKET_FORMAL_TRAIN if is_market else _GEN_FORMAL_TRAIN,
+            "test_size": _GEN_MARKET_FORMAL_TEST if is_market else _GEN_FORMAL_TEST,
             "min_oos_trades": max(request.min_oos_trades, 2),
         }
     )

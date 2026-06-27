@@ -49,6 +49,20 @@ class RunRequest(BaseModel):
     min_oos_trades: int = 2
 
 
+class GenerateContext(BaseModel):
+    """Prior strategy context for an iterative Builder revision.
+
+    The user's new prompt remains the durable run title. Context is only fed to
+    the generator so it can revise the existing strategy faithfully.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    source: str = Field(min_length=1)
+    prompt: str | None = None
+    note: str | None = None
+
+
 class GenerateRequest(BaseModel):
     """Submit a natural-language strategy description; Apollo generates the code,
     then it runs through the same gate. `tier` selects the (branded) model."""
@@ -57,6 +71,7 @@ class GenerateRequest(BaseModel):
 
     prompt: str = Field(min_length=1)
     tier: str = "free"
+    context: GenerateContext | None = None
 
 
 class RunState(StrEnum):
@@ -94,6 +109,29 @@ class RunResponse(BaseModel):
     train_size: int | None = None
     test_size: int | None = None
     adapter: str | None = None
+
+
+class StrategyChatRequest(BaseModel):
+    """Ask a question about the current generated strategy/run.
+
+    This is not a generation request: it should explain evidence, code, and next
+    options without silently changing the strategy.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    question: str = Field(min_length=1)
+    source: str = Field(min_length=1)
+    prompt: str | None = None
+    note: str | None = None
+    verdict: Verdict | None = None
+    adapter: str | None = None
+
+
+class StrategyChatResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    answer: str
 
 
 class RunSummary(BaseModel):
@@ -199,6 +237,7 @@ class StrategyVersionRecord(StrategyDraftCreate):
     draft_id: str
     version_number: int
     frozen_at: str = ""
+    promoted: bool = False  # marked as a "champion" → eligible for scheduled re-validation
 
 
 class StrategySummary(StrategyRecord):
@@ -206,6 +245,39 @@ class StrategySummary(StrategyRecord):
     latest_validation: RunSummary | None = None
     versions_count: int = 0
     runs_count: int = 0
+    promoted: bool = False  # any version promoted
+
+
+class DecayAlert(BaseModel):
+    """A promoted strategy whose latest held-out validation breached a threshold —
+    surfaced by the decay monitor (re-validation + alerting)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    strategy_id: str
+    title: str
+    symbol: str | None = None
+    passed: bool | None = None
+    oos_sharpe: float | None = None
+    retention: float | None = None
+    reason: str
+
+
+class TrackedRun(BaseModel):
+    """One MLflow-tracked backtest, for the in-app experiments browser."""
+
+    model_config = ConfigDict(frozen=True)
+
+    run_id: str
+    name: str
+    symbol: str | None = None
+    adapter: str | None = None
+    run_kind: str | None = None
+    passed: bool | None = None
+    oos_sharpe: float | None = None
+    retention: float | None = None
+    oos_trades: float | None = None
+    created_at: int = 0  # epoch ms, as MLflow returns
 
 
 class StrategyDetail(BaseModel):

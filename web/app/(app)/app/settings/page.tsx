@@ -1,8 +1,10 @@
 "use client";
 
 import { Check, Sparkles, Zap } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { PageFrame, PageHeader, FadeUp } from "@/components/app/page-frame";
 import { APOLLO_TIERS, type TierKey } from "@/lib/api";
+import { useAuth } from "@/lib/auth-context";
 import { useRuns } from "@/lib/runs-context";
 
 // The user's current plan. Static until auth/billing land; the free tier is the
@@ -20,7 +22,18 @@ const PERKS: Record<TierKey, string[]> = {
 
 export default function SettingsPage() {
   const { runs } = useRuns();
+  const auth = useAuth();
+  const router = useRouter();
   const currentTier = APOLLO_TIERS.find((t) => t.key === CURRENT_PLAN)!;
+  const displayName =
+    auth.user?.user_metadata.full_name?.toString() || auth.user?.email?.split("@")[0] || "Local dev";
+  const email = auth.user?.email ?? "local-dev";
+  const initial = displayName.slice(0, 1).toUpperCase();
+
+  async function signOut() {
+    await auth.signOut();
+    router.push("/login");
+  }
 
   return (
     <PageFrame max="max-w-5xl">
@@ -31,15 +44,22 @@ export default function SettingsPage() {
         <section className="panel rounded p-3">
           <div className="flex items-center gap-3">
             <span className="accent-gradient flex h-9 w-9 items-center justify-center rounded font-mono text-sm font-semibold text-accent-ink">
-              A
+              {initial}
             </span>
             <div className="min-w-0 flex-1">
-              <div className="text-base text-text">Akishai</div>
-              <div className="font-mono text-xs text-muted">akishais18@gmail.com</div>
+              <div className="text-base text-text">{displayName}</div>
+              <div className="font-mono text-xs text-muted">{email}</div>
             </div>
             <span className="inline-flex items-center gap-1.5 rounded border border-accent/20 bg-accent/10 px-2 py-1 font-mono text-[11px] text-accent">
               <Sparkles className="h-3 w-3" /> {currentTier.name}
             </span>
+            <button
+              type="button"
+              onClick={() => void signOut()}
+              className="focusable inline-flex h-8 items-center rounded border border-line-strong px-2.5 font-mono text-[11px] uppercase tracking-wider text-text-dim transition-colors hover:bg-white/[0.06] hover:text-text"
+            >
+              Sign out
+            </button>
           </div>
           <div className="mt-3 grid grid-cols-3 gap-1.5 border-t border-line pt-3">
             <Usage label="strategies" value={runs.length} />

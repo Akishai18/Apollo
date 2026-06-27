@@ -29,13 +29,21 @@ from green.api.models import (
     StrategyVersionRecord,
 )
 from green.api.settings import Settings
-from green.api.store import InMemoryRunStore, RunStore, SqliteRunStore, StoredRun, build_store
+from green.api.store import (
+    InMemoryRunStore,
+    PostgresRunStore,
+    RunStore,
+    SqliteRunStore,
+    StoredRun,
+    build_store,
+)
 
 __all__ = [
     "AdapterSpec",
     "AuthError",
     "InMemoryRunStore",
     "JobRunner",
+    "PostgresRunStore",
     "Principal",
     "ProgressInfo",
     "RunKind",

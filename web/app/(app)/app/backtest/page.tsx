@@ -38,6 +38,17 @@ import { useRuns } from "@/lib/runs-context";
 const LAB_PREFILL_KEY = "apollo:lab-source";
 
 type GridRow = { key: string; values: string };
+type MarketDataConfig = {
+  symbol: string;
+  period: string;
+  start: string;
+  end: string;
+  interval: string;
+  autoAdjust: boolean;
+  feePerShare: number;
+  slippageBps: number;
+  maxPosition: number;
+};
 
 const DEFAULT_GRID: GridRow[] = [
   { key: "symbol", values: "SYN" },
@@ -86,6 +97,30 @@ function strategyTitle(className: string, grid: Record<string, (number | string)
   return symbol && symbol !== "SYN" ? `${symbol} ${label}` : label;
 }
 
+function withGridSymbol(grid: GridRow[], symbol: string): GridRow[] {
+  const clean = symbol.trim().toUpperCase();
+  const next = grid.map((row) => (row.key.trim() === "symbol" ? { ...row, values: clean } : row));
+  return next.some((row) => row.key.trim() === "symbol")
+    ? next
+    : [{ key: "symbol", values: clean }, ...next];
+}
+
+function marketDataParams(md: MarketDataConfig): Record<string, unknown> {
+  const params: Record<string, unknown> = {
+    provider: "yahoo",
+    symbols: md.symbol.trim().toUpperCase(),
+    period: md.period,
+    interval: md.interval,
+    auto_adjust: md.autoAdjust,
+    fee_per_share: md.feePerShare,
+    slippage_bps: md.slippageBps,
+    max_position: md.maxPosition,
+  };
+  if (md.start.trim()) params.start = md.start.trim();
+  if (md.end.trim()) params.end = md.end.trim();
+  return params;
+}
+
 export default function BacktestPage() {
   const router = useRouter();
   const { refresh } = useRuns();
@@ -104,7 +139,17 @@ export default function BacktestPage() {
   const [grid, setGrid] = useState<GridRow[]>(DEFAULT_GRID);
   const [adapter, setAdapter] = useState<"toy" | "market_data">("toy");
   const [toy, setToy] = useState({ n_steps: 600, mu: 100, theta: 0.1, sigma: 1, seed: 7 });
-  const [mdParams, setMdParams] = useState("{}");
+  const [marketData, setMarketData] = useState<MarketDataConfig>({
+    symbol: "SLS",
+    period: "2y",
+    start: "",
+    end: "",
+    interval: "1d",
+    autoAdjust: true,
+    feePerShare: 0.005,
+    slippageBps: 1,
+    maxPosition: 1000,
+  });
   const [train, setTrain] = useState(200);
   const [test, setTest] = useState(100);
   const [step, setStep] = useState("");
@@ -137,18 +182,29 @@ export default function BacktestPage() {
     if (ad?.name === "toy" && ad.params) setToy((prev) => ({ ...prev, ...ad.params }));
   }, []);
 
+  const chooseAdapter = useCallback(
+    (next: "toy" | "market_data") => {
+      setAdapter(next);
+      setGrid((g) => withGridSymbol(g, next === "market_data" ? marketData.symbol : "SYN"));
+      if (next === "market_data") {
+        setTrain((v) => Math.min(v, 120));
+        setTest((v) => Math.min(v, 60));
+      }
+    },
+    [marketData.symbol],
+  );
+
   const busy = snap?.state === "queued" || snap?.state === "running" || snap?.state === "generating";
 
   const run = useCallback(async () => {
     setError(null);
     let adapterParams: Record<string, unknown> = toy;
     if (adapter === "market_data") {
-      try {
-        adapterParams = JSON.parse(mdParams) as Record<string, unknown>;
-      } catch {
-        setError("Adapter params must be valid JSON.");
+      if (!marketData.symbol.trim()) {
+        setError("Enter a ticker symbol for Yahoo market data.");
         return;
       }
+      adapterParams = marketDataParams(marketData);
     }
     const gridObj: Record<string, (number | string)[]> = {};
     for (const row of grid) {
@@ -238,7 +294,7 @@ export default function BacktestPage() {
     grid,
     adapter,
     toy,
-    mdParams,
+    marketData,
     train,
     test,
     step,
@@ -348,11 +404,11 @@ export default function BacktestPage() {
               templates={templates}
               loadTemplate={loadTemplate}
               adapter={adapter}
-              setAdapter={setAdapter}
+              chooseAdapter={chooseAdapter}
               toy={toy}
               setToy={setToy}
-              mdParams={mdParams}
-              setMdParams={setMdParams}
+              marketData={marketData}
+              setMarketData={setMarketData}
               train={train}
               setTrain={setTrain}
               test={test}
@@ -456,11 +512,11 @@ function ConfigPanel({
   templates,
   loadTemplate,
   adapter,
-  setAdapter,
+  chooseAdapter,
   toy,
   setToy,
-  mdParams,
-  setMdParams,
+  marketData,
+  setMarketData,
   train,
   setTrain,
   test,
@@ -489,11 +545,11 @@ function ConfigPanel({
   templates: ApiTemplate[];
   loadTemplate: (t: ApiTemplate) => void;
   adapter: "toy" | "market_data";
-  setAdapter: (v: "toy" | "market_data") => void;
+  chooseAdapter: (v: "toy" | "market_data") => void;
   toy: { n_steps: number; mu: number; theta: number; sigma: number; seed: number };
   setToy: (v: { n_steps: number; mu: number; theta: number; sigma: number; seed: number }) => void;
-  mdParams: string;
-  setMdParams: (v: string) => void;
+  marketData: MarketDataConfig;
+  setMarketData: React.Dispatch<React.SetStateAction<MarketDataConfig>>;
   train: number;
   setTrain: (v: number) => void;
   test: number;
@@ -655,11 +711,11 @@ function ConfigPanel({
         <Section title="Data adapter">
           <select
             value={adapter}
-            onChange={(e) => setAdapter(e.target.value as "toy" | "market_data")}
+            onChange={(e) => chooseAdapter(e.target.value as "toy" | "market_data")}
             className="lab-input mb-2"
           >
             <option value="toy">toy — synthetic OU series</option>
-            <option value="market_data">market_data</option>
+            <option value="market_data">Yahoo Finance — daily OHLCV</option>
           </select>
           {adapter === "toy" ? (
             <div className="grid grid-cols-2 gap-2">
@@ -670,15 +726,88 @@ function ConfigPanel({
               <NumField label="sigma" value={toy.sigma} onChange={(v) => setToy({ ...toy, sigma: v })} step="any" />
             </div>
           ) : (
-            <Field label="Params (JSON)">
-              <textarea
-                value={mdParams}
-                onChange={(e) => setMdParams(e.target.value)}
-                rows={4}
-                spellCheck={false}
-                className="lab-input font-mono"
+            <div className="grid grid-cols-2 gap-2">
+              <Field label="Ticker">
+                <input
+                  value={marketData.symbol}
+                  onChange={(e) => {
+                    const symbol = e.target.value.toUpperCase();
+                    setMarketData((m) => ({ ...m, symbol }));
+                    setGrid((g) => withGridSymbol(g, symbol));
+                  }}
+                  className="lab-input font-mono"
+                />
+              </Field>
+              <Field label="Period">
+                <select
+                  value={marketData.period}
+                  onChange={(e) => setMarketData((m) => ({ ...m, period: e.target.value }))}
+                  className="lab-input"
+                >
+                  <option value="6mo">6 months</option>
+                  <option value="1y">1 year</option>
+                  <option value="2y">2 years</option>
+                  <option value="5y">5 years</option>
+                  <option value="10y">10 years</option>
+                </select>
+              </Field>
+              <Field label="Start">
+                <input
+                  value={marketData.start}
+                  onChange={(e) => setMarketData((m) => ({ ...m, start: e.target.value }))}
+                  placeholder="YYYY-MM-DD"
+                  className="lab-input font-mono"
+                />
+              </Field>
+              <Field label="End">
+                <input
+                  value={marketData.end}
+                  onChange={(e) => setMarketData((m) => ({ ...m, end: e.target.value }))}
+                  placeholder="latest"
+                  className="lab-input font-mono"
+                />
+              </Field>
+              <Field label="Interval">
+                <select
+                  value={marketData.interval}
+                  onChange={(e) => setMarketData((m) => ({ ...m, interval: e.target.value }))}
+                  className="lab-input"
+                >
+                  <option value="1d">daily</option>
+                  <option value="1wk">weekly</option>
+                </select>
+              </Field>
+              <Field label="Adjusted">
+                <label className="flex h-9 items-center gap-2 rounded border border-line bg-bg px-2 font-mono text-[11px] text-muted">
+                  <input
+                    type="checkbox"
+                    checked={marketData.autoAdjust}
+                    onChange={(e) =>
+                      setMarketData((m) => ({ ...m, autoAdjust: e.target.checked }))
+                    }
+                  />
+                  splits/dividends
+                </label>
+              </Field>
+              <NumField
+                label="Fee / share"
+                value={marketData.feePerShare}
+                onChange={(v) => setMarketData((m) => ({ ...m, feePerShare: v }))}
+                step="any"
               />
-            </Field>
+              <NumField
+                label="Slippage bps"
+                value={marketData.slippageBps}
+                onChange={(v) => setMarketData((m) => ({ ...m, slippageBps: v }))}
+                step="any"
+              />
+              <NumField
+                label="Max position"
+                value={marketData.maxPosition}
+                onChange={(v) => setMarketData((m) => ({ ...m, maxPosition: v }))}
+                step="any"
+              />
+            </div>
           )}
         </Section>
 

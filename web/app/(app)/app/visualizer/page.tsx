@@ -194,7 +194,7 @@ function WindowDrilldown({
             Walk-forward window
           </h2>
           <p className="mt-1 font-mono text-[11px] text-muted">
-            train {w.window.train_start}–{w.window.train_end} · test {w.window.test_start}–{w.window.test_end}
+            train {windowDateLabel(w, "train")} · test {windowDateLabel(w, "test")}
           </p>
         </div>
         <div className="flex flex-wrap gap-1">
@@ -221,6 +221,22 @@ function WindowDrilldown({
       </div>
     </div>
   );
+}
+
+function windowDateLabel(w: ApiWindow, part: "train" | "test"): string {
+  const dates = part === "train" ? w.train_dates : w.test_dates;
+  if (dates.length > 0) return compactDateRange(dates[0], dates[dates.length - 1]);
+  const win = w.window;
+  return part === "train"
+    ? `${win.train_start}–${win.train_end}`
+    : `${win.test_start}–${win.test_end}`;
+}
+
+function compactDateRange(start: string, end: string): string {
+  const s = start.slice(0, 10);
+  const e = end.slice(0, 10);
+  if (s.slice(0, 4) === e.slice(0, 4)) return `${s.slice(5)}–${e.slice(5)}`;
+  return `${s}–${e}`;
 }
 
 function CompareCard({

@@ -20,6 +20,12 @@ _ALLOWED_ROOTS = {
     "__future__",
 }
 
+_INDICATOR_ARITY = {
+    "sma": 2,
+    "ema": 2,
+    "zscore": 2,
+}
+
 
 def validate_source(source: str) -> list[str]:
     """Return a list of human-readable problems (empty = valid)."""
@@ -58,6 +64,17 @@ def validate_source(source: str) -> list[str]:
         if "on_tick" not in methods:
             errors.append(f"class {cls.name} does not implement on_tick")
 
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = _call_name(node.func)
+        expected = _INDICATOR_ARITY.get(name)
+        if expected is not None and len(node.args) != expected:
+            errors.append(
+                f"{name}() expects {expected} positional arguments: "
+                f"{name}(values, window); found {len(node.args)}"
+            )
+
     return errors
 
 
@@ -66,4 +83,12 @@ def _base_name(base: ast.expr) -> str:
         return base.id
     if isinstance(base, ast.Attribute):
         return base.attr
+    return ""
+
+
+def _call_name(func: ast.expr) -> str:
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        return func.attr
     return ""

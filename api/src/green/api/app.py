@@ -2,10 +2,11 @@
 stream progress). It holds no business rules beyond transport, auth, and job
 orchestration; the engine, gate, and sandbox do the work.
 
-Auth: every request is resolved to a user. With a JWT secret configured, a
-verified Supabase bearer token is required; without one (local/dev), requests
-run as a fixed dev user. Runs are owned by the submitting user and reads are
-scoped to the owner — a cross-user fetch is indistinguishable from "not found".
+Auth: every request is resolved to a user. With Supabase JWT verification
+configured, a verified bearer token is required; without one (local/dev),
+requests run as a fixed dev user. Runs are owned by the submitting user and
+reads are scoped to the owner — a cross-user fetch is indistinguishable from
+"not found".
 
 Endpoints:
   GET  /healthz          liveness
@@ -22,14 +23,18 @@ from fastapi import APIRouter, FastAPI, Header, Request, WebSocket, WebSocketDis
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from green.api.auth import AuthError, verify_supabase_jwt
+from green.api.assistant import answer_strategy_question
+from green.api.auth import AuthError, verify_supabase_jwt, verify_supabase_user_endpoint
 from green.api.jobs import JobRunner
 from green.api.models import (
+    DecayAlert,
     GenerateRequest,
     RunKind,
     RunRequest,
     RunResponse,
     RunSummary,
+    StrategyChatRequest,
+    StrategyChatResponse,
     StrategyCreate,
     StrategyDetail,
     StrategyDraftCreate,
@@ -38,10 +43,12 @@ from green.api.models import (
     StrategyRecord,
     StrategySummary,
     StrategyVersionRecord,
+    TrackedRun,
 )
 from green.api.settings import Settings
 from green.api.store import build_store
 from green.api.templates import templates_payload
+from green.api.tracking import list_tracked_runs
 
 router = APIRouter()
 
@@ -60,12 +67,52 @@ def _resolve_user(settings: Settings, bearer: str | None) -> str:
         return settings.dev_user_id
     if not bearer or not bearer.lower().startswith("bearer "):
         raise AuthError("missing bearer token")
-    assert settings.jwt_secret is not None
     token = bearer.split(" ", 1)[1].strip()
-    principal = verify_supabase_jwt(
-        token, secret=settings.jwt_secret, audience=settings.jwt_audience
-    )
+    try:
+        principal = verify_supabase_jwt(
+            token,
+            secret=settings.jwt_secret,
+            jwks_url=settings.jwt_jwks_url,
+            issuer=settings.jwt_issuer,
+            audience=settings.jwt_audience,
+        )
+    except AuthError:
+        if not settings.supabase_url or not settings.supabase_anon_key:
+            raise
+        principal = verify_supabase_user_endpoint(
+            token,
+            supabase_url=settings.supabase_url,
+            anon_key=settings.supabase_anon_key,
+        )
     return principal.user_id
+
+
+def _generation_prompt(body: GenerateRequest) -> str | None:
+    if body.context is None:
+        return None
+
+    parts = [
+        "Revise the existing Apollo trading strategy instead of starting from scratch.",
+        "Keep the result as one valid Strategy subclass that passes Apollo's sandbox and gate.",
+        "Preserve the existing intent unless the user's new request explicitly changes it.",
+        "",
+        "User requested change:",
+        body.prompt,
+    ]
+    if body.context.prompt:
+        parts.extend(["", "Previous user request:", body.context.prompt])
+    if body.context.note:
+        parts.extend(["", "Previous rationale:", body.context.note])
+    parts.extend(
+        [
+            "",
+            "Existing strategy source:",
+            "```python",
+            body.context.source,
+            "```",
+        ]
+    )
+    return "\n".join(parts)
 
 
 @router.get("/healthz")
@@ -168,6 +215,75 @@ def create_version(
     return version
 
 
+@router.post("/strategies/{strategy_id}/promote")
+def promote_strategy(
+    request: Request, strategy_id: str, authorization: str | None = Header(default=None)
+) -> JSONResponse:
+    try:
+        user_id = _resolve_user(_settings(request), authorization)
+    except AuthError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=401)
+    ok = _runner(request).promote_strategy(user_id, strategy_id, True)
+    if not ok:
+        return JSONResponse({"detail": "strategy has no versions to promote"}, status_code=404)
+    return JSONResponse({"strategy_id": strategy_id, "promoted": True})
+
+
+@router.post("/strategies/{strategy_id}/demote")
+def demote_strategy(
+    request: Request, strategy_id: str, authorization: str | None = Header(default=None)
+) -> JSONResponse:
+    try:
+        user_id = _resolve_user(_settings(request), authorization)
+    except AuthError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=401)
+    ok = _runner(request).promote_strategy(user_id, strategy_id, False)
+    if not ok:
+        return JSONResponse({"detail": "strategy has no versions"}, status_code=404)
+    return JSONResponse({"strategy_id": strategy_id, "promoted": False})
+
+
+@router.post("/maintenance/revalidate")
+async def revalidate_promoted(
+    request: Request, authorization: str | None = Header(default=None)
+) -> JSONResponse:
+    """Re-run formal validation for every promoted strategy on current data.
+    Callable on a schedule (see scripts/revalidate.py) for decay monitoring."""
+    try:
+        user_id = _resolve_user(_settings(request), authorization)
+    except AuthError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=401)
+    run_ids = _runner(request).revalidate_promoted(user_id)
+    return JSONResponse({"run_ids": run_ids, "count": len(run_ids)})
+
+
+@router.get("/maintenance/alerts", response_model=list[DecayAlert])
+def decay_alerts(
+    request: Request,
+    min_oos_sharpe: float = 0.5,
+    authorization: str | None = Header(default=None),
+) -> list[DecayAlert] | JSONResponse:
+    """Promoted strategies whose latest validation breached the bar — the decay
+    monitor's read side (pair with POST /maintenance/revalidate on a schedule)."""
+    try:
+        user_id = _resolve_user(_settings(request), authorization)
+    except AuthError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=401)
+    return _runner(request).decay_alerts(user_id, min_oos_sharpe)
+
+
+@router.get("/experiments/runs", response_model=list[TrackedRun])
+def experiment_runs(
+    request: Request, authorization: str | None = Header(default=None)
+) -> list[TrackedRun] | JSONResponse:
+    """MLflow-tracked backtests for the in-app browser (empty when tracking off)."""
+    try:
+        _resolve_user(_settings(request), authorization)
+    except AuthError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=401)
+    return list_tracked_runs()
+
+
 @router.post("/versions/{version_id}/backtest", response_model=RunResponse, status_code=202)
 async def backtest_version(
     request: Request, version_id: str, authorization: str | None = Header(default=None)
@@ -229,10 +345,40 @@ async def submit_generation(
     except AuthError as exc:
         return JSONResponse({"detail": str(exc)}, status_code=401)
     runner = _runner(request)
-    run_id = runner.submit_generation(user_id, body.prompt, body.tier)
+    run_id = runner.submit_generation(
+        user_id,
+        body.prompt,
+        body.tier,
+        generation_prompt=_generation_prompt(body),
+    )
     snapshot = runner.get(run_id, user_id)
     assert snapshot is not None  # just created
     return snapshot
+
+
+@router.post("/assistant/strategy", response_model=StrategyChatResponse)
+def chat_about_strategy(
+    request: Request,
+    body: StrategyChatRequest,
+    authorization: str | None = Header(default=None),
+) -> StrategyChatResponse | JSONResponse:
+    """Answer a conversational question about a generated strategy/run.
+
+    This endpoint never changes code or starts a new backtest. Revision requests
+    still go through /generate with context.
+    """
+    try:
+        _resolve_user(_settings(request), authorization)
+    except AuthError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=401)
+    settings = _settings(request)
+    return StrategyChatResponse(
+        answer=answer_strategy_question(
+            body,
+            gemini_key=settings.gemini_api_key,
+            gemini_model=settings.gemini_model,
+        )
+    )
 
 
 @router.post("/runs/{run_id}/validate", response_model=RunResponse, status_code=202)
@@ -313,7 +459,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or Settings.from_env()
     app = FastAPI(title="green — strategy validation API", version="0.1.0")
     app.state.settings = settings
-    store = build_store(settings.store, sqlite_path=settings.sqlite_path)
+    store = build_store(
+        settings.store,
+        sqlite_path=settings.sqlite_path,
+        database_url=settings.database_url,
+    )
     app.state.runner = JobRunner(
         store,
         max_jobs=settings.max_jobs,

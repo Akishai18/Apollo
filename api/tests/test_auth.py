@@ -7,9 +7,14 @@ audience, and subject checks. Minting helpers come from conftest fixtures.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 
+import jwt
 import pytest
+from cryptography.hazmat.primitives.asymmetric import rsa
+from jwt import PyJWKClient
+from jwt.algorithms import RSAAlgorithm
 
 from green.api.auth import AuthError, verify_supabase_jwt
 
@@ -35,6 +40,44 @@ def test_alg_confusion_is_rejected(mint_hs256: Callable[..., str], far_future: i
         )
         with pytest.raises(AuthError, match="unsupported alg"):
             verify_supabase_jwt(token, secret=_SECRET)
+
+
+def test_valid_rs256_jwks_token_yields_the_subject(
+    monkeypatch: pytest.MonkeyPatch, far_future: int
+) -> None:
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    public_jwk = json.loads(RSAAlgorithm.to_jwk(key.public_key()))
+    public_jwk.update({"kid": "test-key", "alg": "RS256", "use": "sig"})
+
+    def fetch_data(_self: PyJWKClient) -> dict[str, object]:
+        return {"keys": [public_jwk]}
+
+    monkeypatch.setattr(PyJWKClient, "fetch_data", fetch_data)
+    token = jwt.encode(
+        {
+            "sub": "user-123",
+            "aud": "authenticated",
+            "iss": "https://project.supabase.co/auth/v1",
+            "exp": far_future,
+        },
+        key,
+        algorithm="RS256",
+        headers={"kid": "test-key"},
+    )
+
+    principal = verify_supabase_jwt(
+        token,
+        jwks_url="https://project.supabase.co/auth/v1/.well-known/jwks.json",
+        issuer="https://project.supabase.co/auth/v1",
+    )
+
+    assert principal.user_id == "user-123"
+
+
+def test_rs256_path_rejects_hs256_token(user_token: Callable[..., str]) -> None:
+    token = user_token("user-123", _SECRET)
+    with pytest.raises(AuthError, match="expected RS256"):
+        verify_supabase_jwt(token, jwks_url="https://project.supabase.co/auth/v1/jwks")
 
 
 def test_expired_token_is_rejected(mint_hs256: Callable[..., str]) -> None:

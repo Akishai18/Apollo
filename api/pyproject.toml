@@ -10,8 +10,11 @@ dependencies = [
     "green-sandbox",
     "green-generator",
     "fastapi>=0.115",
+    "psycopg[binary]>=3.2",
+    "PyJWT[crypto]>=2.10",
     "uvicorn[standard]>=0.30",  # [standard] bundles websockets — required for the WS endpoint
     "pydantic>=2.10",
+    "mlflow-skinny>=2.16",  # tracking client only (no server/UI) for run logging
 ]
 
 [build-system]

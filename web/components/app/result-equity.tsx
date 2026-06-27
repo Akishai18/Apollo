@@ -10,11 +10,15 @@ export function ResultEquity({
   inSample,
   oos,
   buyHoldOos,
+  inDates,
+  oosDates,
   mode,
 }: {
   inSample: number[];
   oos: number[];
   buyHoldOos?: number[];
+  inDates?: string[];
+  oosDates?: string[];
   mode: "equity" | "drawdown";
 }) {
   const W = 1000;
@@ -51,6 +55,17 @@ export function ResultEquity({
     vals.map((v, i) => `${i === 0 ? "M" : "L"}${pt(i + offset, v)}`).join(" ");
 
   const gridVals = [max, min + span / 2, min];
+
+  // Calendar x-axis: one date per bar (train + test), shown only when the run
+  // carries real dates. ~5 evenly spaced ticks; first/last anchor to the edges.
+  const axisDates =
+    inDates && oosDates && inDates.length + oosDates.length === combined.length
+      ? [...inDates, ...oosDates]
+      : null;
+  const tickCount = 5;
+  const tickIdxs = axisDates
+    ? Array.from({ length: tickCount }, (_, k) => Math.round((k / (tickCount - 1)) * (combined.length - 1)))
+    : [];
 
   // Rebase buy-and-hold to continue from in-sample's last equity point.
   let benchmark: number[] | null = null;
@@ -94,6 +109,21 @@ export function ResultEquity({
           </g>
         );
       })}
+
+      {/* calendar x-axis ticks (real-data runs only) */}
+      {axisDates &&
+        tickIdxs.map((i, k) => (
+          <text
+            key={i}
+            x={x(i)}
+            y={H - 6}
+            textAnchor={k === 0 ? "start" : k === tickIdxs.length - 1 ? "end" : "middle"}
+            className="fill-[var(--color-faint)] font-mono"
+            fontSize="9.5"
+          >
+            {formatTick(axisDates[i])}
+          </text>
+        ))}
 
       {mode === "equity" ? (
         <>
@@ -171,6 +201,15 @@ export function ResultEquity({
       )}
     </svg>
   );
+}
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+// "2024-03-14" → "Mar ’24"
+function formatTick(iso: string): string {
+  const m = Number(iso.slice(5, 7)) - 1;
+  const yy = iso.slice(2, 4);
+  return `${MONTHS[m] ?? ""} ’${yy}`;
 }
 
 function underwater(equity: number[]): number[] {

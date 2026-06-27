@@ -26,6 +26,11 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, cast
 
+import psycopg
+from psycopg import Connection
+from psycopg.rows import tuple_row
+from psycopg.types.json import Jsonb
+
 from green.api.models import (
     ProgressInfo,
     RunRequest,
@@ -218,6 +223,14 @@ class RunStore(ABC):
 
     @abstractmethod
     def list_runs_for_strategy(self, strategy_id: str, user_id: str) -> list[StoredRun]: ...
+
+    @abstractmethod
+    def set_version_promoted(
+        self, version_id: str, user_id: str, promoted: bool
+    ) -> StrategyVersionRecord | None: ...
+
+    @abstractmethod
+    def list_promoted_versions(self, user_id: str) -> list[StrategyVersionRecord]: ...
 
     def get_for_user(self, run_id: str, user_id: str) -> StoredRun | None:
         """Ownership-checked read: returns None for both 'missing' and 'someone
@@ -425,6 +438,27 @@ class InMemoryRunStore(RunStore):
                 r
                 for r in self._runs.values()
                 if r.user_id == user_id and r.request.strategy_id == strategy_id
+            ]
+
+    def set_version_promoted(
+        self, version_id: str, user_id: str, promoted: bool
+    ) -> StrategyVersionRecord | None:
+        with self._lock:
+            if self._version_users.get(version_id) != user_id:
+                return None
+            current = self._versions.get(version_id)
+            if current is None:
+                return None
+            updated = current.model_copy(update={"promoted": promoted})
+            self._versions[version_id] = updated
+            return updated
+
+    def list_promoted_versions(self, user_id: str) -> list[StrategyVersionRecord]:
+        with self._lock:
+            return [
+                v
+                for vid, v in self._versions.items()
+                if self._version_users.get(vid) == user_id and v.promoted
             ]
 
     def _touch_strategy(self, strategy_id: str, now: str) -> None:
@@ -799,6 +833,31 @@ class SqliteRunStore(RunStore):
             rows = cursor.fetchall()
         return [self._row_to_run(cast("tuple[Any, ...]", row)) for row in rows]
 
+    def set_version_promoted(
+        self, version_id: str, user_id: str, promoted: bool
+    ) -> StrategyVersionRecord | None:
+        current = self.get_version_for_user(version_id, user_id)
+        if current is None:
+            return None
+        updated = current.model_copy(update={"promoted": promoted})
+        with self._lock:
+            self._conn.execute(
+                "UPDATE strategy_versions SET version_json = ? WHERE id = ? AND user_id = ?",
+                (updated.model_dump_json(), version_id, user_id),
+            )
+            self._conn.commit()
+        return updated
+
+    def list_promoted_versions(self, user_id: str) -> list[StrategyVersionRecord]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT version_json FROM strategy_versions "
+                "WHERE user_id = ? ORDER BY version_number",
+                (user_id,),
+            ).fetchall()
+        versions = [StrategyVersionRecord.model_validate_json(cast("str", r[0])) for r in rows]
+        return [v for v in versions if v.promoted]
+
     @staticmethod
     def _row_to_run(row: tuple[Any, ...]) -> StoredRun:
         id_, user_id, state, request_json = row[0], row[1], row[2], row[3]
@@ -854,12 +913,410 @@ class SqliteRunStore(RunStore):
             self._conn.close()
 
 
-def build_store(backend: str, *, sqlite_path: str = "green.db") -> RunStore:
-    return SqliteRunStore(sqlite_path) if backend == "sqlite" else InMemoryRunStore()
+class PostgresRunStore(RunStore):
+    """Durable store on Postgres/Supabase.
+
+    FastAPI connects server-side and preserves the same application-level owner
+    checks as SQLite. The Supabase migration adds RLS as defense in depth.
+    """
+
+    def __init__(self, database_url: str) -> None:
+        self._conn: Connection[tuple[Any, ...]] = psycopg.connect(
+            database_url,
+            autocommit=True,
+            row_factory=tuple_row,
+            prepare_threshold=None,
+        )
+        self._lock = threading.Lock()
+
+    def create(self, run_id: str, user_id: str, request: RunRequest) -> StoredRun:
+        now = _now_iso()
+        run = StoredRun(
+            id=run_id,
+            user_id=user_id,
+            state=RunState.QUEUED,
+            request=request,
+            created_at=now,
+            updated_at=now,
+        )
+        with self._lock, self._conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO public.runs "
+                "(id, user_id, strategy_id, strategy_version_id, state, request_json, "
+                "created_at, updated_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                (
+                    run_id,
+                    user_id,
+                    request.strategy_id,
+                    request.strategy_version_id,
+                    run.state.value,
+                    Jsonb(request.model_dump(mode="json")),
+                    now,
+                    now,
+                ),
+            )
+        return run
+
+    def get(self, run_id: str) -> StoredRun | None:
+        with self._lock, self._conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, user_id::text, state, request_json, progress_json, verdict_json, "
+                "error, note, prompt, created_at, updated_at FROM public.runs WHERE id = %s",
+                (run_id,),
+            )
+            row = cur.fetchone()
+        return self._row_to_run(row) if row is not None else None
+
+    def update(
+        self,
+        run_id: str,
+        *,
+        state: RunState | None = None,
+        progress: ProgressInfo | None = None,
+        verdict: Verdict | None = None,
+        error: str | None = None,
+        note: str | None = None,
+        prompt: str | None = None,
+        request: RunRequest | None = None,
+    ) -> None:
+        sets: list[str] = []
+        values: list[Any] = []
+        if state is not None:
+            sets.append("state = %s")
+            values.append(state.value)
+        if progress is not None:
+            sets.append("progress_json = %s")
+            values.append(Jsonb(progress.model_dump(mode="json")))
+        if verdict is not None:
+            sets.append("verdict_json = %s")
+            values.append(Jsonb(verdict.model_dump(mode="json")))
+        if error is not None:
+            sets.append("error = %s")
+            values.append(error)
+        if note is not None:
+            sets.append("note = %s")
+            values.append(note)
+        if prompt is not None:
+            sets.append("prompt = %s")
+            values.append(prompt)
+        if request is not None:
+            sets.append("request_json = %s")
+            values.append(Jsonb(request.model_dump(mode="json")))
+            sets.append("strategy_id = %s")
+            values.append(request.strategy_id)
+            sets.append("strategy_version_id = %s")
+            values.append(request.strategy_version_id)
+        sets.append("updated_at = %s")
+        values.append(_now_iso())
+        values.append(run_id)
+        with self._lock, self._conn.cursor() as cur:
+            cur.execute(
+                cast("Any", f"UPDATE public.runs SET {', '.join(sets)} WHERE id = %s"),
+                values,
+            )
+
+    def list_for_user(self, user_id: str) -> list[StoredRun]:
+        with self._lock, self._conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, user_id::text, state, request_json, progress_json, verdict_json, "
+                "error, note, prompt, created_at, updated_at "
+                "FROM public.runs WHERE user_id = %s ORDER BY created_at",
+                (user_id,),
+            )
+            rows = cur.fetchall()
+        return [self._row_to_run(row) for row in rows]
+
+    def create_strategy(self, user_id: str, body: StrategyCreate) -> StrategyRecord:
+        now = _now_iso()
+        record = StrategyRecord(
+            id=uuid.uuid4().hex,
+            title=body.title,
+            description=body.description,
+            status=StrategyStatus.ACTIVE,
+            created_at=now,
+            updated_at=now,
+        )
+        with self._lock, self._conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO public.strategies "
+                "(id, user_id, title, description, status, created_at, updated_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                (
+                    record.id,
+                    user_id,
+                    record.title,
+                    record.description,
+                    record.status.value,
+                    record.created_at,
+                    record.updated_at,
+                ),
+            )
+        return record
+
+    def list_strategies_for_user(self, user_id: str) -> list[StrategyRecord]:
+        with self._lock, self._conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, title, description, status, created_at, updated_at "
+                "FROM public.strategies WHERE user_id = %s ORDER BY updated_at DESC",
+                (user_id,),
+            )
+            rows = cur.fetchall()
+        return [self._row_to_strategy(row) for row in rows]
+
+    def get_strategy_for_user(self, strategy_id: str, user_id: str) -> StrategyRecord | None:
+        with self._lock, self._conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, title, description, status, created_at, updated_at "
+                "FROM public.strategies WHERE id = %s AND user_id = %s",
+                (strategy_id, user_id),
+            )
+            row = cur.fetchone()
+        return self._row_to_strategy(row) if row else None
+
+    def create_draft(
+        self, strategy_id: str, user_id: str, body: StrategyDraftCreate
+    ) -> StrategyDraftRecord | None:
+        now = _now_iso()
+        if self.get_strategy_for_user(strategy_id, user_id) is None:
+            return None
+        record = StrategyDraftRecord(
+            **body.model_dump(),
+            id=uuid.uuid4().hex,
+            strategy_id=strategy_id,
+            created_at=now,
+            updated_at=now,
+        )
+        with self._lock, self._conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO public.strategy_drafts "
+                "(id, strategy_id, user_id, draft_json, created_at, updated_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s)",
+                (
+                    record.id,
+                    strategy_id,
+                    user_id,
+                    Jsonb(record.model_dump(mode="json")),
+                    now,
+                    now,
+                ),
+            )
+            self._touch_strategy_sql(cur, strategy_id, now)
+        return record
+
+    def update_draft(
+        self, draft_id: str, user_id: str, body: StrategyDraftUpdate
+    ) -> StrategyDraftRecord | None:
+        current = self.get_draft_for_user(draft_id, user_id)
+        if current is None:
+            return None
+        now = _now_iso()
+        data = current.model_dump()
+        for key, value in body.model_dump(exclude_unset=True).items():
+            data[key] = value
+        data["updated_at"] = now
+        record = StrategyDraftRecord.model_validate(data)
+        with self._lock, self._conn.cursor() as cur:
+            cur.execute(
+                "UPDATE public.strategy_drafts SET draft_json = %s, updated_at = %s "
+                "WHERE id = %s AND user_id = %s",
+                (Jsonb(record.model_dump(mode="json")), now, draft_id, user_id),
+            )
+            self._touch_strategy_sql(cur, record.strategy_id, now)
+        return record
+
+    def get_draft_for_user(self, draft_id: str, user_id: str) -> StrategyDraftRecord | None:
+        with self._lock, self._conn.cursor() as cur:
+            cur.execute(
+                "SELECT draft_json FROM public.strategy_drafts WHERE id = %s AND user_id = %s",
+                (draft_id, user_id),
+            )
+            row = cur.fetchone()
+        return StrategyDraftRecord.model_validate(row[0]) if row else None
+
+    def list_drafts_for_strategy(
+        self, strategy_id: str, user_id: str
+    ) -> list[StrategyDraftRecord]:
+        if self.get_strategy_for_user(strategy_id, user_id) is None:
+            return []
+        with self._lock, self._conn.cursor() as cur:
+            cur.execute(
+                "SELECT draft_json FROM public.strategy_drafts "
+                "WHERE strategy_id = %s AND user_id = %s ORDER BY created_at DESC",
+                (strategy_id, user_id),
+            )
+            rows = cur.fetchall()
+        return [StrategyDraftRecord.model_validate(row[0]) for row in rows]
+
+    def create_version_from_draft(
+        self, draft_id: str, user_id: str
+    ) -> StrategyVersionRecord | None:
+        draft = self.get_draft_for_user(draft_id, user_id)
+        if draft is None:
+            return None
+        now = _now_iso()
+        with self._lock, self._conn.cursor() as cur:
+            cur.execute(
+                "SELECT MAX(version_number) FROM public.strategy_versions "
+                "WHERE strategy_id = %s AND user_id = %s",
+                (draft.strategy_id, user_id),
+            )
+            row = cur.fetchone()
+            version_number = int(row[0] or 0) + 1 if row else 1
+            record = StrategyVersionRecord(
+                **draft.model_dump(exclude={"id", "created_at", "updated_at"}),
+                id=uuid.uuid4().hex,
+                draft_id=draft_id,
+                version_number=version_number,
+                frozen_at=now,
+            )
+            cur.execute(
+                "INSERT INTO public.strategy_versions "
+                "(id, strategy_id, draft_id, user_id, version_number, version_json, frozen_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                (
+                    record.id,
+                    record.strategy_id,
+                    draft_id,
+                    user_id,
+                    version_number,
+                    Jsonb(record.model_dump(mode="json")),
+                    now,
+                ),
+            )
+            self._touch_strategy_sql(cur, record.strategy_id, now)
+        return record
+
+    def get_version_for_user(
+        self, version_id: str, user_id: str
+    ) -> StrategyVersionRecord | None:
+        with self._lock, self._conn.cursor() as cur:
+            cur.execute(
+                "SELECT version_json FROM public.strategy_versions WHERE id = %s AND user_id = %s",
+                (version_id, user_id),
+            )
+            row = cur.fetchone()
+        return StrategyVersionRecord.model_validate(row[0]) if row else None
+
+    def list_versions_for_strategy(
+        self, strategy_id: str, user_id: str
+    ) -> list[StrategyVersionRecord]:
+        if self.get_strategy_for_user(strategy_id, user_id) is None:
+            return []
+        with self._lock, self._conn.cursor() as cur:
+            cur.execute(
+                "SELECT version_json FROM public.strategy_versions "
+                "WHERE strategy_id = %s AND user_id = %s ORDER BY version_number",
+                (strategy_id, user_id),
+            )
+            rows = cur.fetchall()
+        return [StrategyVersionRecord.model_validate(row[0]) for row in rows]
+
+    def list_runs_for_strategy(self, strategy_id: str, user_id: str) -> list[StoredRun]:
+        if self.get_strategy_for_user(strategy_id, user_id) is None:
+            return []
+        with self._lock, self._conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, user_id::text, state, request_json, progress_json, verdict_json, "
+                "error, note, prompt, created_at, updated_at "
+                "FROM public.runs WHERE strategy_id = %s AND user_id = %s ORDER BY created_at DESC",
+                (strategy_id, user_id),
+            )
+            rows = cur.fetchall()
+        return [self._row_to_run(row) for row in rows]
+
+    def set_version_promoted(
+        self, version_id: str, user_id: str, promoted: bool
+    ) -> StrategyVersionRecord | None:
+        current = self.get_version_for_user(version_id, user_id)
+        if current is None:
+            return None
+        updated = current.model_copy(update={"promoted": promoted})
+        with self._lock, self._conn.cursor() as cur:
+            cur.execute(
+                "UPDATE public.strategy_versions SET version_json = %s "
+                "WHERE id = %s AND user_id = %s",
+                (Jsonb(updated.model_dump(mode="json")), version_id, user_id),
+            )
+        return updated
+
+    def list_promoted_versions(self, user_id: str) -> list[StrategyVersionRecord]:
+        with self._lock, self._conn.cursor() as cur:
+            cur.execute(
+                "SELECT version_json FROM public.strategy_versions "
+                "WHERE user_id = %s ORDER BY version_number",
+                (user_id,),
+            )
+            rows = cur.fetchall()
+        versions = [StrategyVersionRecord.model_validate(row[0]) for row in rows]
+        return [v for v in versions if v.promoted]
+
+    @staticmethod
+    def _row_to_run(row: tuple[Any, ...]) -> StoredRun:
+        progress = ProgressInfo.model_validate(row[4]) if row[4] is not None else None
+        verdict = Verdict.model_validate(row[5]) if row[5] is not None else None
+        return StoredRun(
+            id=cast("str", row[0]),
+            user_id=cast("str", row[1]),
+            state=RunState(cast("str", row[2])),
+            request=RunRequest.model_validate(row[3]),
+            progress=progress,
+            verdict=verdict,
+            error=cast("str | None", row[6]),
+            note=cast("str | None", row[7]),
+            prompt=cast("str | None", row[8]),
+            created_at=_db_time_to_iso(row[9]),
+            updated_at=_db_time_to_iso(row[10]),
+        )
+
+    @staticmethod
+    def _row_to_strategy(row: tuple[Any, ...]) -> StrategyRecord:
+        return StrategyRecord(
+            id=cast("str", row[0]),
+            title=cast("str", row[1]),
+            description=cast("str", row[2]),
+            status=StrategyStatus(cast("str", row[3])),
+            created_at=_db_time_to_iso(row[4]),
+            updated_at=_db_time_to_iso(row[5]),
+        )
+
+    @staticmethod
+    def _touch_strategy_sql(
+        cur: psycopg.Cursor[tuple[Any, ...]], strategy_id: str, now: str
+    ) -> None:
+        cur.execute(
+            "UPDATE public.strategies SET updated_at = %s WHERE id = %s",
+            (now, strategy_id),
+        )
+
+    def close(self) -> None:
+        with self._lock:
+            self._conn.close()
+
+
+def _db_time_to_iso(value: object) -> str:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return cast("str", value)
+
+
+def build_store(
+    backend: str,
+    *,
+    sqlite_path: str = "green.db",
+    database_url: str | None = None,
+) -> RunStore:
+    if backend == "sqlite":
+        return SqliteRunStore(sqlite_path)
+    if backend == "postgres":
+        if not database_url:
+            raise ValueError("GREEN_DATABASE_URL is required when GREEN_STORE=postgres")
+        return PostgresRunStore(database_url)
+    return InMemoryRunStore()
 
 
 __all__ = [
     "InMemoryRunStore",
+    "PostgresRunStore",
     "RunStore",
     "SqliteRunStore",
     "StoredRun",

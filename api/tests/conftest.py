@@ -33,6 +33,15 @@ def _user_token(sub: str, secret: str, *, audience: str = "authenticated") -> st
     return _mint_hs256({"sub": sub, "aud": audience, "exp": FAR_FUTURE}, secret)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_market_cache(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Never let tests (which mock the Yahoo fetch) write fake OHLCV into the
+    shared `data/market_data/yahoo` cache — point the adapter at a throwaway dir."""
+    monkeypatch.setenv("GREEN_MARKET_DATA_CACHE", str(tmp_path_factory.mktemp("market-cache")))
+
+
 @pytest.fixture
 def far_future() -> int:
     return FAR_FUTURE

@@ -13,24 +13,29 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
-type StoreBackend = Literal["memory", "sqlite"]
+type StoreBackend = Literal["memory", "sqlite", "postgres"]
 
 
 class Settings(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    # Auth: when jwt_secret is None, auth is OFF and every request is the dev user
-    # (handy for local dev + the offline test suite). Set it (Supabase project's
-    # JWT secret) to require + verify real bearer tokens.
+    # Auth: when no verifier is configured, auth is OFF and every request is the
+    # dev user (handy for local dev + the offline test suite). Modern Supabase
+    # projects use JWKS/RS256; legacy projects can still use the shared HS256
+    # JWT secret.
     jwt_secret: str | None = None
+    jwt_jwks_url: str | None = None
+    jwt_issuer: str | None = None
     jwt_audience: str = "authenticated"
+    supabase_url: str | None = None
+    supabase_anon_key: str | None = None
     dev_user_id: str = "local-dev"
 
-    # Persistence: "memory" (ephemeral) or "sqlite" (durable, survives restart).
-    # Postgres/Supabase is the same RunStore interface behind a DATABASE_URL in
-    # production — see api/migrations/0001_init.sql.
+    # Persistence: "memory" (ephemeral), "sqlite" (local durable), or "postgres"
+    # (Supabase/Postgres via GREEN_DATABASE_URL).
     store: StoreBackend = "memory"
     sqlite_path: str = "green.db"
+    database_url: str | None = None
 
     max_jobs: int = 256
 
@@ -49,7 +54,16 @@ class Settings(BaseModel):
     @classmethod
     def from_env(cls) -> Settings:
         store = os.environ.get("GREEN_STORE", "memory")
-        backend: StoreBackend = "sqlite" if store == "sqlite" else "memory"
+        backend: StoreBackend
+        if store == "postgres":
+            backend = "postgres"
+        elif store == "sqlite":
+            backend = "sqlite"
+        else:
+            backend = "memory"
+        supabase_url = (os.environ.get("GREEN_SUPABASE_URL") or "").rstrip("/")
+        default_jwks = f"{supabase_url}/auth/v1/.well-known/jwks.json" if supabase_url else None
+        default_issuer = f"{supabase_url}/auth/v1" if supabase_url else None
         origins_env = os.environ.get("GREEN_CORS_ORIGINS")
         origins = (
             tuple(o.strip() for o in origins_env.split(",") if o.strip())
@@ -58,10 +72,21 @@ class Settings(BaseModel):
         )
         return cls(
             jwt_secret=os.environ.get("GREEN_JWT_SECRET") or None,
+            jwt_jwks_url=os.environ.get("GREEN_JWT_JWKS_URL") or default_jwks,
+            jwt_issuer=os.environ.get("GREEN_JWT_ISSUER") or default_issuer,
             jwt_audience=os.environ.get("GREEN_JWT_AUDIENCE", "authenticated"),
+            supabase_url=supabase_url or None,
+            supabase_anon_key=(
+                os.environ.get("GREEN_SUPABASE_ANON_KEY")
+                or os.environ.get("SUPABASE_ANON_KEY")
+                or None
+            ),
             dev_user_id=os.environ.get("GREEN_DEV_USER_ID", "local-dev"),
             store=backend,
             sqlite_path=os.environ.get("GREEN_SQLITE_PATH", "green.db"),
+            database_url=(
+                os.environ.get("GREEN_DATABASE_URL") or os.environ.get("DATABASE_URL") or None
+            ),
             cors_origins=origins,
             anthropic_api_key=os.environ.get("GREEN_ANTHROPIC_API_KEY")
             or os.environ.get("ANTHROPIC_API_KEY")
@@ -75,4 +100,4 @@ class Settings(BaseModel):
 
     @property
     def auth_enabled(self) -> bool:
-        return self.jwt_secret is not None
+        return self.jwt_secret is not None or self.jwt_jwks_url is not None

@@ -6,6 +6,7 @@ import {
   JetBrains_Mono,
   Space_Grotesk,
 } from "next/font/google";
+import { AuthProvider } from "@/lib/auth-context";
 import "./globals.css";
 
 const display = Space_Grotesk({
@@ -50,7 +51,9 @@ export default function RootLayout({
       lang="en"
       className={`${display.variable} ${sans.variable} ${mono.variable} ${appSans.variable} ${appMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full bg-bg text-text-dim font-sans">{children}</body>
+      <body className="min-h-full bg-bg text-text-dim font-sans">
+        <AuthProvider>{children}</AuthProvider>
+      </body>
     </html>
   );
 }

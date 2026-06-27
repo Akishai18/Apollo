@@ -18,11 +18,14 @@ type Field = str
 @dataclass(frozen=True)
 class Dataset:
     series: Mapping[Symbol, Mapping[Field, Sequence[float]]]
+    dates: Sequence[str] = ()
 
     def __post_init__(self) -> None:
         lengths = {len(vals) for fields in self.series.values() for vals in fields.values()}
         if len(lengths) > 1:
             raise ValueError("all series must have the same length")
+        if self.dates and len(self.dates) != self.length:
+            raise ValueError("dates length must match series length")
 
     @property
     def symbols(self) -> tuple[Symbol, ...]:
@@ -60,5 +63,6 @@ class Dataset:
             series={
                 symbol: {name: vals[start:end] for name, vals in fields.items()}
                 for symbol, fields in self.series.items()
-            }
+            },
+            dates=self.dates[start:end],
         )

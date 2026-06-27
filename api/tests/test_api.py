@@ -13,6 +13,7 @@ from collections.abc import Callable, Iterator
 from typing import Any, cast
 
 import httpx
+import polars as pl
 import pytest
 from fastapi.testclient import TestClient
 
@@ -202,6 +203,75 @@ def test_completed_backtest_can_be_promoted_to_validation(client: TestClient) ->
     assert by_id[validation_id]["run_kind"] == "validation"
 
 
+def test_promote_then_revalidate_runs_promoted_strategies(client: TestClient) -> None:
+    """Promote a strategy → scheduled re-validation re-runs its latest version; demote
+    → nothing re-runs. This is the decay-monitoring loop."""
+    created = _post(client, "/strategies", {"title": "Champ", "description": ""})
+    sid = cast("str", _json(created)["id"])
+    draft_body = {
+        "prompt": "mean reversion on SYN",
+        "source": MEAN_REVERSION_SOURCE,
+        "class_name": "MeanReversion",
+        "grid": {"symbol": ["SYN"], "lookback": [10], "quantity": [10]},
+        "adapter": {"name": "toy", "params": {"n_steps": 90, "mu": 100.0, "seed": 7}},
+        "train_size": 40,
+        "test_size": 25,
+    }
+    draft = _json(_post(client, f"/strategies/{sid}/drafts", draft_body))
+    _json(_post(client, f"/drafts/{draft['id']}/versions", {}))
+
+    assert _json(_post(client, f"/strategies/{sid}/promote", {}))["promoted"] is True
+    rows = _json_list(_get(client, "/strategies"))
+    assert next(r for r in rows if r["id"] == sid)["promoted"] is True
+
+    revalidated = _json(_post(client, "/maintenance/revalidate", {}))
+    assert revalidated["count"] >= 1
+    run_id = cast("str", revalidated["run_ids"][0])
+    final = _wait_for_terminal(client, run_id)
+    assert final["state"] == "completed"
+    assert final["run_kind"] == "validation"
+
+    assert _json(_post(client, f"/strategies/{sid}/demote", {}))["promoted"] is False
+    assert _json(_post(client, "/maintenance/revalidate", {}))["count"] == 0
+
+
+def test_decay_alerts_flag_promoted_strategies_below_threshold(client: TestClient) -> None:
+    """A promoted strategy with a completed validation is flagged when its held-out
+    Sharpe falls under the threshold; a generous threshold flags nothing."""
+    created = _post(client, "/strategies", {"title": "Decayer", "description": ""})
+    sid = cast("str", _json(created)["id"])
+    draft = _json(
+        _post(
+            client,
+            f"/strategies/{sid}/drafts",
+            {
+                "source": MEAN_REVERSION_SOURCE,
+                "class_name": "MeanReversion",
+                "grid": {"symbol": ["SYN"], "lookback": [10], "quantity": [10]},
+                "adapter": {"name": "toy", "params": {"n_steps": 90, "mu": 100.0, "seed": 7}},
+                "train_size": 40,
+                "test_size": 25,
+            },
+        )
+    )
+    version = _json(_post(client, f"/drafts/{draft['id']}/versions", {}))
+    _post(client, f"/strategies/{sid}/promote", {})
+    validation = _post(client, f"/versions/{version['id']}/validate", {})
+    _wait_for_terminal(client, cast("str", _json(validation)["id"]))
+
+    # impossibly high bar → flagged
+    flagged = _json_list(_get(client, "/maintenance/alerts?min_oos_sharpe=999"))
+    assert any(a["strategy_id"] == sid for a in flagged)
+    # forgiving bar → not flagged
+    clear = _json_list(_get(client, "/maintenance/alerts?min_oos_sharpe=-999"))
+    assert not any(a["strategy_id"] == sid for a in clear)
+
+
+def test_experiments_runs_empty_without_tracking(client: TestClient) -> None:
+    # tracking off in tests → clean empty list, never a 500
+    assert _json_list(_get(client, "/experiments/runs")) == []
+
+
 def test_list_returns_lean_summaries_not_full_verdicts(client: TestClient) -> None:
     run_id = cast("str", _json(_post(client, "/runs", _BASE_REQUEST))["id"])
     _wait_for_terminal(client, run_id)
@@ -299,6 +369,228 @@ def test_generate_persists_prompt_and_generated_source(client: TestClient) -> No
     rows = _json_list(_get(client, "/runs"))
     row = next(r for r in rows if r["id"] == run_id)
     assert row["title"] == prompt[:47] + "…"  # truncated prompt as the list label
+
+
+def test_generate_refinement_uses_context_without_replacing_visible_prompt(
+    client: TestClient,
+) -> None:
+    prompt = "make the entries stricter and reduce drawdown"
+    submit = _post(
+        client,
+        "/generate",
+        {
+            "prompt": prompt,
+            "tier": "free",
+            "context": {
+                "prompt": "mean reversion on SYN",
+                "note": "Buy stretched moves and exit at the mean.",
+                "source": MEAN_REVERSION_SOURCE,
+            },
+        },
+    )
+    run_id = cast("str", _json(submit)["id"])
+    final = _wait_for_terminal(client, run_id)
+
+    assert final["state"] == "completed"
+    assert final["prompt"] == prompt
+    assert "Existing strategy source" not in final["prompt"]
+
+    rows = _json_list(_get(client, "/runs"))
+    row = next(r for r in rows if r["id"] == run_id)
+    assert row["title"] == prompt
+
+
+def test_generated_real_symbol_preview_uses_market_data(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_yahoo(
+        symbols: tuple[str, ...],
+        *,
+        start: str | None,
+        end: str | None,
+        period: str,
+        interval: str,
+        auto_adjust: bool,
+    ) -> pl.DataFrame:
+        assert symbols == ("SLS",)
+        assert period == "2y"
+        rows = 260
+        return pl.DataFrame(
+            {
+                "t": list(range(rows)),
+                "date": [f"2024-01-{(i % 28) + 1:02d}" for i in range(rows)],
+                "symbol": ["SLS"] * rows,
+                "open": [10.0 + i * 0.01 for i in range(rows)],
+                "high": [10.5 + i * 0.01 for i in range(rows)],
+                "low": [9.5 + i * 0.01 for i in range(rows)],
+                "close": [10.1 + i * 0.01 for i in range(rows)],
+                "volume": [1000.0] * rows,
+            }
+        )
+
+    monkeypatch.setattr("green.adapters.market_data._fetch_yahoo", fake_yahoo)
+    prompt = "mean reversion on SLS, buy below the rolling average and exit at the mean"
+    submit = _post(client, "/generate", {"prompt": prompt, "tier": "free"})
+    run_id = cast("str", _json(submit)["id"])
+    final = _wait_for_terminal(client, run_id)
+
+    assert final["state"] == "completed"
+    assert final["symbol"] == "SLS"
+    assert final["adapter"] == "market_data"
+    assert final["train_size"] == 120
+    assert final["test_size"] == 60
+    assert final["verdict"]["windows"][0]["train_dates"]
+
+
+def test_generation_never_errors_when_market_data_unavailable(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Iron-tight chat: a prompt whose ticker can't be loaded (typo, delisted, no
+    rows) must still return a verdict on the synthetic series — never a hard error."""
+
+    def no_rows(*_args: object, **_kwargs: object) -> pl.DataFrame:
+        raise ValueError("Yahoo returned no rows for ZZZZ")
+
+    monkeypatch.setattr("green.adapters.market_data._fetch_yahoo", no_rows)
+    prompt = "build a strategy around the zzzz stock to maximize profit"
+    submit = _post(client, "/generate", {"prompt": prompt, "tier": "free"})
+    run_id = cast("str", _json(submit)["id"])
+    final = _wait_for_terminal(client, run_id)
+
+    assert final["state"] == "completed"  # fell back to synthetic, did not error
+    assert final["verdict"] is not None
+    assert final["error"] is None
+
+
+# A generated strategy that passes static validation but crashes at runtime
+# (len() on a float), and a clean one that runs.
+_CRASHING_SRC = (
+    "from green.core import Strategy\n"
+    "class Boom(Strategy):\n"
+    "    def on_tick(self, view):\n"
+    "        return len(1.0)\n"
+)
+_CLEAN_SRC = (
+    "from green.core import Strategy\n"
+    "class Ok(Strategy):\n"
+    "    def on_tick(self, view):\n"
+    "        return []\n"
+)
+
+
+def _fake_gen(source: str):  # type: ignore[no-untyped-def]
+    from green.generator import GeneratedStrategy, tier_config
+    from green.generator.models import ParamSpec
+
+    def gen(_prompt: str, _tier: str, **_kw: object):  # type: ignore[no-untyped-def]
+        strat = GeneratedStrategy(
+            class_name="",
+            rationale="r",
+            source=source,
+            params=[ParamSpec(name="symbol", values=["SYN"])],
+        )
+        return strat, tier_config("free")
+
+    return gen
+
+
+def _gen_run(client: TestClient, prompt: str = "a simple strategy") -> dict[str, Any]:
+    submit = _post(client, "/generate", {"prompt": prompt, "tier": "free"})
+    return _wait_for_terminal(client, cast("str", _json(submit)["id"]))
+
+
+def test_generation_repairs_a_strategy_that_crashes_at_runtime(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Generated code that crashes in the sandbox is regenerated (crash fed back),
+    not surfaced as a traceback — the run completes once a working version lands."""
+    calls = {"n": 0}
+    crash_gen = _fake_gen(_CRASHING_SRC)
+    clean_gen = _fake_gen(_CLEAN_SRC)
+
+    def flaky(prompt: str, tier: str, **kw: object):  # type: ignore[no-untyped-def]
+        calls["n"] += 1
+        return (crash_gen if calls["n"] == 1 else clean_gen)(prompt, tier, **kw)
+
+    monkeypatch.setattr("green.api.jobs.generate_validated", flaky)
+    final = _gen_run(client)
+
+    assert final["state"] == "completed"  # repaired, no traceback
+    assert calls["n"] >= 2  # regenerated after the crash
+
+
+def test_generation_gives_clean_message_when_unrepairable(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If every attempt crashes, the user gets a friendly message — never a raw traceback."""
+    monkeypatch.setattr("green.api.jobs.generate_validated", _fake_gen(_CRASHING_SRC))
+    final = _gen_run(client)
+
+    assert final["state"] == "error"
+    assert "working strategy" in (final["error"] or "")
+    assert "Traceback" not in (final["error"] or "")
+
+
+def test_completed_run_is_logged_to_mlflow(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When tracking is configured, a finished backtest is logged to MLflow with
+    its OOS metrics. (We stub MLflow's I/O — the point is our wiring, not MLflow's
+    storage; and logging is best-effort so it never breaks a run.)"""
+    import mlflow
+
+    captured: dict[str, float] = {}
+
+    class _Ctx:
+        def __enter__(self) -> _Ctx:
+            return self
+
+        def __exit__(self, *_a: object) -> bool:
+            return False
+
+    monkeypatch.setenv("GREEN_MLFLOW_TRACKING_URI", "stub")
+    monkeypatch.setattr(mlflow, "set_tracking_uri", lambda *_a, **_k: None)
+    monkeypatch.setattr(mlflow, "set_experiment", lambda *_a, **_k: None)
+    monkeypatch.setattr(mlflow, "start_run", lambda *_a, **_k: _Ctx())
+    monkeypatch.setattr(mlflow, "set_tags", lambda *_a, **_k: None)
+    monkeypatch.setattr(mlflow, "log_params", lambda *_a, **_k: None)
+    monkeypatch.setattr(mlflow, "log_text", lambda *_a, **_k: None)
+    monkeypatch.setattr(mlflow, "log_metrics", lambda metrics: captured.update(metrics))
+
+    final = _gen_run(client, "mean reversion strategy")
+    assert final["state"] == "completed"
+
+    for _ in range(50):  # logging fires just after COMPLETED, on a worker thread
+        if captured:
+            break
+        time.sleep(0.05)
+
+    assert "oos_sharpe" in captured and "retention" in captured and "passed" in captured
+
+
+def test_strategy_assistant_answers_without_starting_a_run(client: TestClient) -> None:
+    run_id = cast("str", _json(_post(client, "/runs", _BASE_REQUEST))["id"])
+    final = _wait_for_terminal(client, run_id)
+    before = _json_list(_get(client, "/runs"))
+
+    answer = _json(
+        _post(
+            client,
+            "/assistant/strategy",
+            {
+                "question": "what causes this strategy to fail?",
+                "source": final["source"],
+                "prompt": "mean reversion on SYN",
+                "verdict": final["verdict"],
+                "adapter": final["adapter"],
+            },
+        )
+    )
+
+    assert answer["answer"]
+    assert "Sharpe" in answer["answer"]
+    after = _json_list(_get(client, "/runs"))
+    assert [row["id"] for row in after] == [row["id"] for row in before]
 
 
 def test_generated_preview_creates_strategy_and_promotes_to_formal_validation(

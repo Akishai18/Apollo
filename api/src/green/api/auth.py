@@ -1,14 +1,13 @@
-"""Bearer-token auth — verify Supabase-issued JWTs ourselves (FastAPI is the
-authoritative brain; Supabase is a primitive).
+"""Bearer-token auth for Supabase-issued JWTs.
 
-We verify HS256 tokens with the project's shared JWT secret. HS256 is pinned
-explicitly — the algorithm is read from our config, never trusted from the
-token header — which closes the classic JWT alg-confusion / `alg:none` holes.
-(Projects using asymmetric signing keys would verify RS256/ES256 against the
-JWKS endpoint instead; that is the extension point, noted in the migration.)
+FastAPI is the authoritative brain; Supabase is the identity primitive. We
+support both Supabase signing systems:
 
-No third-party dependency: HS256 verification is just an HMAC, and owning it
-keeps the security surface small and the types strict.
+- HS256 via the legacy shared JWT secret.
+- RS256 via the modern JWKS endpoint.
+
+In both cases the allowed algorithm is pinned from our config path, not trusted
+from a token's header, so `alg:none` / alg-confusion bypasses are rejected.
 """
 
 from __future__ import annotations
@@ -18,8 +17,14 @@ import hashlib
 import hmac
 import json
 import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from typing import Any, cast
+
+import jwt
+from jwt import PyJWKClient
+from jwt.exceptions import InvalidTokenError
 
 
 class AuthError(Exception):
@@ -29,6 +34,9 @@ class AuthError(Exception):
 @dataclass(frozen=True)
 class Principal:
     user_id: str  # the JWT `sub` claim
+
+
+_JWK_CLIENTS: dict[str, PyJWKClient] = {}
 
 
 def _b64url_decode(segment: str) -> bytes:
@@ -46,10 +54,40 @@ def _decode_json(segment: str) -> dict[str, Any]:
 def verify_supabase_jwt(
     token: str,
     *,
-    secret: str,
+    secret: str | None = None,
+    jwks_url: str | None = None,
+    issuer: str | None = None,
     audience: str | None = "authenticated",
     leeway_seconds: int = 0,
     now: int | None = None,
+) -> Principal:
+    if secret is None and jwks_url is None:
+        raise AuthError("auth verifier is not configured")
+    if secret is not None:
+        return _verify_hs256(
+            token,
+            secret=secret,
+            audience=audience,
+            leeway_seconds=leeway_seconds,
+            now=now,
+        )
+    assert jwks_url is not None
+    return _verify_rs256(
+        token,
+        jwks_url=jwks_url,
+        audience=audience,
+        issuer=issuer,
+        leeway_seconds=leeway_seconds,
+    )
+
+
+def _verify_hs256(
+    token: str,
+    *,
+    secret: str,
+    audience: str | None,
+    leeway_seconds: int,
+    now: int | None,
 ) -> Principal:
     parts = token.split(".")
     if len(parts) != 3:
@@ -97,3 +135,87 @@ def verify_supabase_jwt(
     if not isinstance(sub, str) or not sub:
         raise AuthError("token missing a subject (sub)")
     return Principal(user_id=sub)
+
+
+def _verify_rs256(
+    token: str,
+    *,
+    jwks_url: str,
+    audience: str | None,
+    issuer: str | None,
+    leeway_seconds: int,
+) -> Principal:
+    parts = token.split(".")
+    if len(parts) != 3:
+        raise AuthError("malformed token (expected 3 segments)")
+    try:
+        header = _decode_json(parts[0])
+    except (ValueError, AuthError) as exc:
+        raise AuthError("unreadable token header") from exc
+    if header.get("alg") != "RS256":
+        raise AuthError(f"unsupported alg {header.get('alg')!r}; expected RS256")
+
+    try:
+        key = _jwk_client(jwks_url).get_signing_key_from_jwt(token).key
+        options = {"verify_aud": audience is not None, "verify_iss": issuer is not None}
+        payload = jwt.decode(
+            token,
+            key=key,
+            algorithms=["RS256"],
+            audience=audience,
+            issuer=issuer,
+            leeway=leeway_seconds,
+            options=cast("Any", options),
+        )
+    except InvalidTokenError as exc:
+        raise AuthError(str(exc)) from exc
+
+    sub = payload.get("sub")
+    if not isinstance(sub, str) or not sub:
+        raise AuthError("token missing a subject (sub)")
+    return Principal(user_id=sub)
+
+
+def verify_supabase_user_endpoint(
+    token: str,
+    *,
+    supabase_url: str,
+    anon_key: str,
+) -> Principal:
+    """Ask Supabase Auth to validate the bearer token.
+
+    This is a compatibility path for projects whose access tokens are not
+    verifiable by the configured local JWKS/HS256 path. The anon key is public;
+    the token remains the authority.
+    """
+
+    url = f"{supabase_url.rstrip('/')}/auth/v1/user"
+    request = urllib.request.Request(
+        url,
+        headers={
+            "apikey": anon_key,
+            "authorization": f"Bearer {token}",
+        },
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=8) as response:
+            payload = json.loads(response.read().decode())
+    except (OSError, urllib.error.HTTPError, json.JSONDecodeError) as exc:
+        raise AuthError("Supabase token verification failed") from exc
+
+    if not isinstance(payload, dict):
+        raise AuthError("Supabase user response is not a JSON object")
+    payload = cast("dict[str, Any]", payload)
+    sub = payload.get("id")
+    if not isinstance(sub, str) or not sub:
+        raise AuthError("Supabase user response missing id")
+    return Principal(user_id=sub)
+
+
+def _jwk_client(jwks_url: str) -> PyJWKClient:
+    client = _JWK_CLIENTS.get(jwks_url)
+    if client is None:
+        client = PyJWKClient(jwks_url)
+        _JWK_CLIENTS[jwks_url] = client
+    return client

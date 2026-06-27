@@ -109,7 +109,7 @@ export default function StrategyDetailPage() {
           />
 
           <div className="mb-3 grid grid-cols-2 gap-1.5 lg:grid-cols-4">
-            <Stat label="Latest status" value={statusLabel(latestValidation ?? latestRun)} />
+            <Stat label="Latest status" value={statusLabel(latestValidation, latestRun)} />
             <Stat label="Versions" value={detail.versions.length.toString()} />
             <Stat label="Runs" value={detail.runs.length.toString()} />
             <Stat label="Drafts" value={detail.drafts.length.toString()} />
@@ -265,9 +265,12 @@ function Empty({ children }: { children: React.ReactNode }) {
   return <p className="px-3 py-10 text-center font-mono text-xs text-faint">{children}</p>;
 }
 
-function statusLabel(run?: RunSummary | null): string {
+function statusLabel(validation?: RunSummary | null, latestRun?: RunSummary | null): string {
+  if (!validation && !latestRun) return "Draft";
+  const run = validation ?? latestRun;
   if (!run) return "Draft";
   if (run.state === "error") return "Error";
   if (run.state !== "completed") return "Running";
-  return run.passed ? "Validated" : "Rejected";
+  if (!validation) return "Backtested";
+  return validation.passed ? "Validated" : "Rejected";
 }

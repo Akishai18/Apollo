@@ -1,9 +1,10 @@
 /*
-  Client for the Apollo FastAPI backend. The app talks to it over REST (submit /
-  fetch) + WebSocket (live progress). Auth is off in local dev (the API resolves a
-  fixed dev user), so no token is needed yet; when Supabase auth lands, attach the
-  bearer token here.
+  Client for the Apollo FastAPI backend. The app talks to it over REST and can
+  optionally use WebSocket streaming. Local dev can run with auth off; when
+  Supabase is configured, every call attaches the current access token.
 */
+
+import { getAccessToken } from "@/lib/supabase";
 
 export const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const WS_BASE = API_BASE.replace(/^http/, "ws");
@@ -41,6 +42,8 @@ export type ApiWindow = {
   train: ApiMetrics;
   test: ApiMetrics;
   sweep: ApiSweepPoint[];
+  train_dates: string[];
+  test_dates: string[];
   train_equity: [number, number][];
   test_equity: [number, number][];
   benchmark_equity: [number, number][];
@@ -112,6 +115,20 @@ export type StrategySummary = StrategyRecord & {
   latest_validation: RunSummary | null;
   versions_count: number;
   runs_count: number;
+  promoted: boolean;
+};
+
+export type TrackedRun = {
+  run_id: string;
+  name: string;
+  symbol: string | null;
+  adapter: string | null;
+  run_kind: string | null;
+  passed: boolean | null;
+  oos_sharpe: number | null;
+  retention: number | null;
+  oos_trades: number | null;
+  created_at: number; // epoch ms
 };
 
 export type StrategyDraft = {
@@ -148,6 +165,21 @@ export type StrategyDetail = {
   runs: RunSummary[];
 };
 
+export type GenerationContext = {
+  source: string;
+  prompt?: string;
+  note?: string;
+};
+
+export type StrategyQuestionContext = {
+  question: string;
+  source: string;
+  prompt?: string;
+  note?: string;
+  verdict?: ApiVerdict;
+  adapter?: string | null;
+};
+
 /*
   Apollo's plans, as the UI presents them. These are BRANDED names only — the
   model behind each tier is a server-side secret and is deliberately never sent
@@ -175,8 +207,22 @@ export type ApiTemplate = {
 
 // --- calls -----------------------------------------------------------------
 
+async function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  const token = await getAccessToken();
+  const headers = new Headers(init.headers);
+  if (token) headers.set("authorization", `Bearer ${token}`);
+  try {
+    return await fetch(`${API_BASE}${path}`, { ...init, headers });
+  } catch (error) {
+    throw new Error(
+      `Apollo API is unreachable at ${API_BASE}. Start the API or fix its environment.`,
+      { cause: error },
+    );
+  }
+}
+
 export async function getTemplates(): Promise<ApiTemplate[]> {
-  const res = await fetch(`${API_BASE}/templates`);
+  const res = await apiFetch("/templates");
   if (!res.ok) throw new Error(`templates: ${res.status}`);
   return (await res.json()) as ApiTemplate[];
 }
@@ -185,7 +231,7 @@ export async function createStrategy(body: {
   title: string;
   description?: string;
 }): Promise<StrategyRecord> {
-  const res = await fetch(`${API_BASE}/strategies`, {
+  const res = await apiFetch("/strategies", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ title: body.title, description: body.description ?? "" }),
@@ -195,13 +241,13 @@ export async function createStrategy(body: {
 }
 
 export async function listStrategies(): Promise<StrategySummary[]> {
-  const res = await fetch(`${API_BASE}/strategies`);
+  const res = await apiFetch("/strategies");
   if (!res.ok) throw new Error(`strategies: ${res.status}`);
   return (await res.json()) as StrategySummary[];
 }
 
 export async function getStrategy(id: string): Promise<StrategyDetail> {
-  const res = await fetch(`${API_BASE}/strategies/${id}`);
+  const res = await apiFetch(`/strategies/${id}`);
   if (!res.ok) throw new Error(`strategy: ${res.status}`);
   return (await res.json()) as StrategyDetail;
 }
@@ -210,7 +256,7 @@ export async function createDraft(
   strategyId: string,
   body: Omit<StrategyDraft, "id" | "strategy_id" | "created_at" | "updated_at">,
 ): Promise<StrategyDraft> {
-  const res = await fetch(`${API_BASE}/strategies/${strategyId}/drafts`, {
+  const res = await apiFetch(`/strategies/${strategyId}/drafts`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
@@ -220,7 +266,7 @@ export async function createDraft(
 }
 
 export async function createVersion(draftId: string): Promise<StrategyVersion> {
-  const res = await fetch(`${API_BASE}/drafts/${draftId}/versions`, { method: "POST" });
+  const res = await apiFetch(`/drafts/${draftId}/versions`, { method: "POST" });
   if (!res.ok) throw new Error(`version: ${res.status}`);
   return (await res.json()) as StrategyVersion;
 }
@@ -229,7 +275,8 @@ export async function runVersion(
   versionId: string,
   runKind: RunKind,
 ): Promise<{ id: string }> {
-  const res = await fetch(`${API_BASE}/versions/${versionId}/${runKind === "validation" ? "validate" : "backtest"}`, {
+  const action = runKind === "validation" ? "validate" : "backtest";
+  const res = await apiFetch(`/versions/${versionId}/${action}`, {
     method: "POST",
   });
   if (!res.ok) throw new Error(`version run: ${res.status}`);
@@ -238,7 +285,7 @@ export async function runVersion(
 
 // The caller's runs, newest activity first (GET /runs returns lean summaries).
 export async function listRuns(): Promise<RunSummary[]> {
-  const res = await fetch(`${API_BASE}/runs`);
+  const res = await apiFetch("/runs");
   if (!res.ok) throw new Error(`runs: ${res.status}`);
   const rows = (await res.json()) as RunSummary[];
   return rows.sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
@@ -246,13 +293,48 @@ export async function listRuns(): Promise<RunSummary[]> {
 
 // One run with its full verdict + source/prompt (GET /runs/{id}).
 export async function getRun(id: string): Promise<RunSnapshot> {
-  const res = await fetch(`${API_BASE}/runs/${id}`);
+  const res = await apiFetch(`/runs/${id}`);
   if (!res.ok) throw new Error(`run: ${res.status}`);
   return (await res.json()) as RunSnapshot;
 }
 
+export type DecayAlert = {
+  strategy_id: string;
+  title: string;
+  symbol: string | null;
+  passed: boolean | null;
+  oos_sharpe: number | null;
+  retention: number | null;
+  reason: string;
+};
+
+export async function listDecayAlerts(): Promise<DecayAlert[]> {
+  const res = await fetch(`${API_BASE}/maintenance/alerts`);
+  if (!res.ok) throw new Error(`alerts: ${res.status}`);
+  return (await res.json()) as DecayAlert[];
+}
+
+export async function listTrackedRuns(): Promise<TrackedRun[]> {
+  const res = await fetch(`${API_BASE}/experiments/runs`);
+  if (!res.ok) throw new Error(`experiments: ${res.status}`);
+  return (await res.json()) as TrackedRun[];
+}
+
+export async function revalidatePromoted(): Promise<{ count: number; run_ids: string[] }> {
+  const res = await fetch(`${API_BASE}/maintenance/revalidate`, { method: "POST" });
+  if (!res.ok) throw new Error(`revalidate: ${res.status}`);
+  return (await res.json()) as { count: number; run_ids: string[] };
+}
+
+export async function setStrategyPromoted(id: string, promoted: boolean): Promise<void> {
+  const res = await fetch(`${API_BASE}/strategies/${id}/${promoted ? "promote" : "demote"}`, {
+    method: "POST",
+  });
+  if (!res.ok) throw new Error(`promote: ${res.status}`);
+}
+
 export async function submitRun(request: Record<string, unknown>): Promise<{ id: string }> {
-  const res = await fetch(`${API_BASE}/runs`, {
+  const res = await apiFetch("/runs", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(request),
@@ -262,7 +344,7 @@ export async function submitRun(request: Record<string, unknown>): Promise<{ id:
 }
 
 export async function validateRun(id: string): Promise<{ id: string }> {
-  const res = await fetch(`${API_BASE}/runs/${id}/validate`, { method: "POST" });
+  const res = await apiFetch(`/runs/${id}/validate`, { method: "POST" });
   if (!res.ok) throw new Error(`validate: ${res.status}`);
   return (await res.json()) as { id: string };
 }
@@ -275,14 +357,26 @@ export async function validateRun(id: string): Promise<{ id: string }> {
 export async function submitGeneration(
   prompt: string,
   tier: TierKey,
+  context?: GenerationContext,
 ): Promise<{ id: string }> {
-  const res = await fetch(`${API_BASE}/generate`, {
+  const res = await apiFetch("/generate", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ prompt, tier }),
+    body: JSON.stringify({ prompt, tier, context }),
   });
   if (!res.ok) throw new Error(`generate: ${res.status}`);
   return (await res.json()) as { id: string };
+}
+
+export async function askStrategyQuestion(body: StrategyQuestionContext): Promise<string> {
+  const res = await apiFetch("/assistant/strategy", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`strategy chat: ${res.status}`);
+  const payload = (await res.json()) as { answer: string };
+  return payload.answer;
 }
 
 /*
@@ -345,24 +439,30 @@ export function streamRun(
   if (!ENABLE_WS_STREAM) {
     startPolling();
   } else {
-    ws = new WebSocket(`${WS_BASE}/runs/${id}/ws`);
-    ws.onmessage = (event) => {
-      let snap: RunSnapshot;
-      try {
-        snap = JSON.parse(event.data as string) as RunSnapshot;
-      } catch {
-        return;
-      }
-      handleSnapshot(snap); // ignores non-snapshot frames, e.g. {detail}
-    };
+    getAccessToken()
+      .then((token) => {
+        if (disposed || settled) return;
+        const query = token ? `?token=${encodeURIComponent(token)}` : "";
+        ws = new WebSocket(`${WS_BASE}/runs/${id}/ws${query}`);
+        ws.onmessage = (event) => {
+          let snap: RunSnapshot;
+          try {
+            snap = JSON.parse(event.data as string) as RunSnapshot;
+          } catch {
+            return;
+          }
+          handleSnapshot(snap); // ignores non-snapshot frames, e.g. {detail}
+        };
 
-    ws.onerror = () => {
-      startPolling();
-    };
+        ws.onerror = () => {
+          startPolling();
+        };
 
-    ws.onclose = () => {
-      if (!settled) startPolling();
-    };
+        ws.onclose = () => {
+          if (!settled) startPolling();
+        };
+      })
+      .catch(() => startPolling());
   }
 
   return () => {

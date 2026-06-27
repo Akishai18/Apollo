@@ -15,6 +15,7 @@ import {
   ChevronsRight,
 } from "lucide-react";
 import { ApolloMark } from "@/components/logo";
+import { useAuth } from "@/lib/auth-context";
 
 /*
   The primary nav rail. Collapsed it's a 64px icon strip with hover tooltips;
@@ -28,12 +29,17 @@ const NAV = [
   { href: "/app/backtest", label: "Backtester", icon: FlaskConical, match: (p: string) => p.startsWith("/app/backtest") },
   { href: "/app/visualizer", label: "Visualizer", icon: ScanLine, match: (p: string) => p.startsWith("/app/visualizer") },
   { href: "/app/validation", label: "Validation", icon: ShieldCheck, match: (p: string) => p.startsWith("/app/validation") },
+  { href: "/app/experiments", label: "Experiments", icon: FlaskConical, match: (p: string) => p.startsWith("/app/experiments") },
 ] as const;
 
 export function AppSidebar({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname() ?? "/app";
+  const { user } = useAuth();
   const [expanded, setExpanded] = useState(false);
   const onSettings = pathname.startsWith("/app/settings");
+  const displayName =
+    user?.user_metadata.full_name?.toString() || user?.email?.split("@")[0] || "Apollo";
+  const initial = displayName.slice(0, 1).toUpperCase();
 
   return (
     <aside
@@ -114,11 +120,11 @@ export function AppSidebar({ onNavigate }: { onNavigate?: () => void }) {
             onSettings ? "ring-2 ring-accent/40" : ""
           }`}
         >
-          A
+          {initial}
         </span>
         {expanded ? (
           <span className="min-w-0 leading-tight">
-            <span className="block truncate text-xs text-text">Akishai</span>
+            <span className="block truncate text-xs text-text">{displayName}</span>
             <span className="block font-mono text-[10px] text-faint">Apollo Spark · Free</span>
           </span>
         ) : (

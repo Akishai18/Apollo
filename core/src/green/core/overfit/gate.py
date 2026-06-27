@@ -74,6 +74,8 @@ class WindowResult(BaseModel):
     train: Metrics  # in-sample, for the chosen params
     test: Metrics  # held-out, same params
     sweep: tuple[SweepPoint, ...]  # full grid on train — the heatmap data
+    train_dates: tuple[str, ...] = ()
+    test_dates: tuple[str, ...] = ()
     # The chosen params' equity curves. Side by side these ARE the overfit story:
     # in-sample looks good, held-out is the honest test. The visuals draw these.
     train_equity: EquityCurve = ()
@@ -214,6 +216,8 @@ def run_walk_forward(
                 periods_per_year=spec.periods_per_year,
             ),
             sweep=tuple(sweep),
+            train_dates=tuple(train_data.dates),
+            test_dates=tuple(test_data.dates),
             train_equity=best_train_equity,
             test_equity=tuple(held_out.equity_curve),
             benchmark_equity=_benchmark_equity(test_data, starting_cash=starting_cash),

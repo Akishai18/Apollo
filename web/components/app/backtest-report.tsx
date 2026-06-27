@@ -13,7 +13,12 @@ import {
 import { BuildingState } from "./building-state";
 import { ApolloMark } from "@/components/logo";
 import { ResultEquity } from "./result-equity";
-import { MonthlyReturns, equityToMonthlyReturns } from "./monthly-returns";
+import {
+  MonthlyReturns,
+  MonthlyReturnsCalendar,
+  equityToMonthlyReturns,
+  equityToCalendarMonthly,
+} from "./monthly-returns";
 import type { RunSnapshot, ApiVerdict, ApiWindow, ApiTradeRecord } from "@/lib/api";
 
 /*
@@ -116,7 +121,7 @@ export function reportMeta(snap: RunSnapshot): string {
   parts.push(snap.adapter === "market_data" ? "market data" : "daily bars");
   if (snap.train_size && snap.test_size) {
     const total = estimateBarSpan(v);
-    parts.push(barSpanLabel(total));
+    parts.push(verdictDateSpan(v) ?? barSpanLabel(total));
     const ratio = Math.round((snap.train_size / (snap.train_size + snap.test_size)) * 100);
     parts.push(`${ratio}/${100 - ratio} split`);
   }
@@ -135,6 +140,15 @@ function barSpanLabel(bars: number, baseYear = 2015, barsPerYear = 252): string 
   const y0 = baseYear;
   const y1 = baseYear + Math.floor((bars - 1) / barsPerYear);
   return y0 === y1 ? `${y0}` : `${y0}–${y1}`;
+}
+
+function verdictDateSpan(v: ApiVerdict | null | undefined): string | null {
+  if (!v?.windows.length) return null;
+  const first = v.windows[0];
+  const last = v.windows[v.windows.length - 1];
+  const start = first.train_dates[0];
+  const end = last.test_dates[last.test_dates.length - 1];
+  return start && end ? compactDateRange(start, end) : null;
 }
 
 /* ── verdict banner ───────────────────────────────────────────────── */
@@ -283,7 +297,14 @@ function EquityCard({
         </div>
       </CardHead>
       <div className="px-2.5 pb-3 pt-1">
-        <ResultEquity inSample={inSample} oos={oos} buyHoldOos={buyHoldOos} mode={mode} />
+        <ResultEquity
+          inSample={inSample}
+          oos={oos}
+          buyHoldOos={buyHoldOos}
+          inDates={w.train_dates}
+          oosDates={w.test_dates}
+          mode={mode}
+        />
       </div>
     </Card>
   );
@@ -358,10 +379,21 @@ function WindowsCard({
 }
 
 function windowLabel(w: ApiWindow, part: "train" | "test"): string {
+  const dates = part === "train" ? w.train_dates : w.test_dates;
+  if (dates.length > 0) return compactDateRange(dates[0], dates[dates.length - 1]);
   const win = w.window;
   const start = part === "train" ? win.train_start : win.test_start;
   const end = part === "train" ? win.train_end : win.test_end;
   return barRangeLabel(start, end);
+}
+
+function compactDateRange(start: string, end: string): string {
+  const s = start.slice(0, 10);
+  const e = end.slice(0, 10);
+  if (s.slice(0, 4) === e.slice(0, 4)) {
+    return `${s.slice(5)}–${e.slice(5)}`;
+  }
+  return `${s}–${e}`;
 }
 
 function barRangeLabel(start: number, end: number, baseYear = 2015, barsPerYear = 252): string {
@@ -394,6 +426,12 @@ function MonthlyCard({ verdict }: { verdict: ApiVerdict }) {
   const factor =
     inSample.length && rawOos.length && rawOos[0] !== 0 ? inSample[inSample.length - 1] / rawOos[0] : 1;
   const stitched = [...inSample, ...rawOos.map((v) => v * factor)];
+  const dates = [...w.train_dates, ...w.test_dates];
+
+  // Real calendar grid when the run carries aligned dates; bar-bucketed fallback
+  // for synthetic/toy runs that have no calendar.
+  const calendar =
+    dates.length === stitched.length ? equityToCalendarMonthly(stitched, dates, inSample.length) : [];
   const returns = equityToMonthlyReturns(stitched);
   const oosStartMonth = Math.floor(inSample.length / 21);
 
@@ -405,7 +443,11 @@ function MonthlyCard({ verdict }: { verdict: ApiVerdict }) {
         </span>
       </CardHead>
       <div className="px-3 pb-3 pt-2">
-        <MonthlyReturns returns={returns} oosStartMonth={oosStartMonth} />
+        {calendar.length > 0 ? (
+          <MonthlyReturnsCalendar cells={calendar} />
+        ) : (
+          <MonthlyReturns returns={returns} oosStartMonth={oosStartMonth} />
+        )}
       </div>
     </Card>
   );

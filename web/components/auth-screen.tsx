@@ -1,11 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Mail, Lock, User, ArrowRight, ShieldCheck, Eye, GitBranch } from "lucide-react";
 import { ApolloMark, Wordmark } from "@/components/logo";
 import { FadeUp } from "@/components/app/page-frame";
+import { useAuth } from "@/lib/auth-context";
 
 type Mode = "login" | "signup";
 
@@ -17,18 +18,59 @@ const PROOFS = [
 
 export function AuthScreen({ mode }: { mode: Mode }) {
   const router = useRouter();
+  const auth = useAuth();
   const isLogin = mode === "login";
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (auth.configured && auth.session) router.replace("/app");
+  }, [auth.configured, auth.session, router]);
 
   const canSubmit =
     email.trim().length > 0 && password.length > 0 && (isLogin || name.trim().length > 0);
 
-  function submit(e: React.FormEvent) {
+  async function submit(e: React.FormEvent) {
     e.preventDefault();
-    // Auth lands later — for now a valid-looking submit drops into the workspace.
-    router.push("/app");
+    setError(null);
+    setNotice(null);
+    if (!auth.configured) {
+      router.push("/app");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      if (isLogin) {
+        await auth.signIn(email.trim(), password);
+        router.push("/app");
+      } else {
+        await auth.signUp(email.trim(), password, name.trim());
+        setNotice("Check your email to confirm the account, then log in.");
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Authentication failed.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function continueWithGoogle() {
+    setError(null);
+    if (!auth.configured) {
+      router.push("/app");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      await auth.signInWithGoogle();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not start Google sign-in.");
+      setSubmitting(false);
+    }
   }
 
   return (
@@ -99,7 +141,8 @@ export function AuthScreen({ mode }: { mode: Mode }) {
 
           <button
             type="button"
-            onClick={() => router.push("/app")}
+            onClick={() => void continueWithGoogle()}
+            disabled={submitting || auth.loading}
             className="focusable mt-7 inline-flex h-11 w-full items-center justify-center gap-2.5 rounded-xl border border-line-strong bg-white/[0.03] text-sm font-medium text-text transition-colors hover:bg-white/[0.07]"
           >
             <GoogleMark /> Continue with Google
@@ -142,6 +185,7 @@ export function AuthScreen({ mode }: { mode: Mode }) {
               <div className="flex justify-end">
                 <button
                   type="button"
+                  disabled={!auth.configured}
                   className="focusable rounded-sm text-xs text-muted transition-colors hover:text-text"
                 >
                   Forgot password?
@@ -149,12 +193,23 @@ export function AuthScreen({ mode }: { mode: Mode }) {
               </div>
             )}
 
+            {error && (
+              <p className="rounded border border-reject/25 bg-reject/[0.06] px-3 py-2 text-xs text-reject">
+                {error}
+              </p>
+            )}
+            {notice && (
+              <p className="rounded border border-pass/25 bg-pass/[0.06] px-3 py-2 text-xs text-pass">
+                {notice}
+              </p>
+            )}
+
             <button
               type="submit"
-              disabled={!canSubmit}
+              disabled={!canSubmit || submitting || auth.loading}
               className="accent-gradient focusable mt-1 inline-flex h-11 items-center justify-center gap-2 rounded-xl text-sm font-medium text-accent-ink shadow-lg shadow-accent/25 transition-[filter,opacity] hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"
             >
-              {isLogin ? "Log in" : "Create account"}
+              {submitting ? "Working…" : isLogin ? "Log in" : "Create account"}
               <ArrowRight className="h-4 w-4" />
             </button>
           </form>
@@ -175,9 +230,11 @@ export function AuthScreen({ mode }: { mode: Mode }) {
             </Link>
           </p>
 
-          <p className="mt-6 text-center font-mono text-[10px] text-faint/70">
-            Auth isn&rsquo;t live yet — this drops you into the workspace.
-          </p>
+          {!auth.configured && (
+            <p className="mt-6 text-center font-mono text-[10px] text-faint/70">
+              Supabase env vars are not set — this uses local dev mode.
+            </p>
+          )}
         </FadeUp>
       </main>
     </div>

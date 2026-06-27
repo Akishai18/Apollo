@@ -24,13 +24,17 @@ def generate_validated(
     anthropic_key: str | None = None,
     gemini_key: str | None = None,
     gemini_model: str | None = None,
+    extra_feedback: str | None = None,
 ) -> tuple[GeneratedStrategy, TierConfig]:
     cfg = tier_config(tier)
     provider = build_provider(
         cfg, anthropic_key=anthropic_key, gemini_key=gemini_key, gemini_model=gemini_model
     )
 
-    feedback: str | None = None
+    # `extra_feedback` carries a *runtime* failure from a prior attempt (e.g. the
+    # generated code crashed in the sandbox) so the model can fix the bug, not
+    # just static-contract violations.
+    feedback: str | None = extra_feedback
     last_errors: list[str] = []
     for _ in range(cfg.max_repairs + 1):
         gen = provider.generate(prompt, model=cfg.model, effort=cfg.effort, feedback=feedback)

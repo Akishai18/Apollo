@@ -49,6 +49,21 @@ A strategy subclasses `green.core.Strategy` and implements `on_tick`:
   - view.symbols() / view.fields(symbol)       what's available
 Fields include "close" (and "open"/"high"/"low"/"volume" on richer data).
 
+Indicator helpers from `green.core.indicators` are pure functions over past
+values. They always take the history sequence first and the window second:
+  - sma(values, window)
+  - ema(values, window)
+  - zscore(values, window)
+
+Correct:
+    closes = view.history(self.symbol, "close", self.slow)
+    fast_ma = sma(closes, self.fast)
+    slow_ma = sma(closes, self.slow)
+
+Incorrect:
+    fast_ma = sma(self.fast)
+    slow_ma = sma(self.slow)
+
 Return a list of `Order(symbol=..., side=Side.BUY|Side.SELL, quantity=<float>)`. \
 Market orders only (omit order_type). Track your own position with an instance flag.
 

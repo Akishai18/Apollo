@@ -9,7 +9,8 @@ Built: `create_app(settings)` (factory; `JobRunner` + `Settings` on `app.state`)
 endpoints `GET /healthz`, `POST /runs`, `GET /runs`, `GET /runs/{id}`,
 `WS /runs/{id}/ws`. Modules: `models.py` (DTOs over core `Verdict`), `registry.py`
 (adapter + sandboxed strategy factory), `jobs.py` (`JobRunner`), `auth.py` (JWT),
-`settings.py` (env config), `store.py` (`RunStore` + InMemory/SQLite), `app.py`.
+`settings.py` (env config), `store.py` (`RunStore` + InMemory/SQLite/Postgres),
+`app.py`.
 Untrusted source **always** runs through `SandboxedStrategy` — no trusted
 in-process path. Deferred: Supabase Storage / Parquet artifacts and parallel
 sweep (see PLAN.md rationale); a hosted `PostgresRunStore` stub.
@@ -20,31 +21,21 @@ Invariants the tests pin:
   `call_soon_threadsafe`. **Never run the gate on the event loop.**
 - With `TestClient`, use it as a **context manager** so the portal event loop
   stays alive and background jobs progress.
-- Auth is **off when no JWT secret is configured** (offline dev/tests = fixed
-  user); set `GREEN_JWT_SECRET` to require verified bearer tokens. Algorithm is
-  pinned to HS256 from our side — never trust the token header's `alg`.
+- Auth is **off when no JWT verifier is configured** (offline dev/tests = fixed
+  user). Set `GREEN_SUPABASE_URL` for modern Supabase JWKS/RS256 verification,
+  or `GREEN_JWT_SECRET` for legacy HS256. Algorithm is pinned from our side —
+  never trust the token header's `alg`.
 - Reads are **ownership-scoped**: another user's run is 404, not 403 (existence
   never leaks). The durable store is the source of truth; the live `_Job` map is
   only streaming machinery and is bounded/evicted.
 
 ### Config (env)
-`GREEN_JWT_SECRET` (unset → auth off), `GREEN_JWT_AUDIENCE` (default
-`authenticated`), `GREEN_STORE` (`memory` | `sqlite`), `GREEN_SQLITE_PATH`,
-`GREEN_DEV_USER_ID`, `GREEN_CORS_ORIGINS` (comma-separated; default
-`http://localhost:3000`). Supabase deployment: run `api/migrations/0001_init.sql`.
-
-### Decision needed before wiring real Supabase auth (Phase 5/6)
-`auth.py` verifies **HS256** (shared JWT secret) — works for Supabase projects
-using the legacy/shared JWT secret. **Modern Supabase projects default to
-asymmetric signing keys (RS256/ES256)** verified against the project's JWKS.
-Pick one before connecting browser auth:
-- **HS256 (current):** create the project with a JWT secret, set
-  `GREEN_JWT_SECRET`. Zero extra code; fully tested offline.
-- **RS256/JWKS:** extend `verify_supabase_jwt` to fetch + cache the JWKS and
-  verify asymmetric signatures (needs a crypto lib, e.g. `pyjwt[crypto]`). The
-  alg is already pinned from our side, so this is a localized change at the
-  `header.get("alg")` branch — not a rewrite. Deferred until a real project
-  exists to verify against (can't be tested offline without a configured key).
+`GREEN_SUPABASE_URL` (derives JWKS + issuer), `GREEN_JWT_JWKS_URL`,
+`GREEN_JWT_ISSUER`, `GREEN_JWT_SECRET` (legacy HS256), `GREEN_JWT_AUDIENCE`
+(default `authenticated`), `GREEN_STORE` (`memory` | `sqlite` | `postgres`),
+`GREEN_SQLITE_PATH`, `GREEN_DATABASE_URL`, `GREEN_DEV_USER_ID`,
+`GREEN_CORS_ORIGINS` (comma-separated; default `http://localhost:3000`).
+Supabase deployment: run `api/migrations/0001_init.sql`.
 
 ### What the web (Phase 5) consumes — all sourced
 - equity chart → `verdict.windows[].train_equity` / `test_equity` (in-sample vs

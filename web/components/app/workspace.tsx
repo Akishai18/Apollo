@@ -6,19 +6,37 @@ import { ArrowUp, Download, Plus, Loader2, ArrowUpRight } from "lucide-react";
 import { ApolloMark } from "@/components/logo";
 import { EvidencePanel } from "./evidence-panel";
 import { verdictToReport } from "@/lib/report";
-import { submitGeneration, streamRun, DEFAULT_TIER, type RunSnapshot } from "@/lib/api";
+import {
+  askStrategyQuestion,
+  submitGeneration,
+  streamRun,
+  DEFAULT_TIER,
+  type ApiVerdict,
+  type GenerationContext,
+  type RunSnapshot,
+} from "@/lib/api";
 import type { RunScenario } from "@/lib/mock";
 import { useRuns } from "@/lib/runs-context";
 
 type Phase = "generating" | "running" | "done" | "error";
 
+type ChatTurn = {
+  role: "user" | "apollo";
+  text: string;
+};
+
 type Active = {
   apiId?: string;
   prompt: string;
   phase: Phase;
+  turns: ChatTurn[];
+  lastInteraction?: "run" | "chat";
+  chatPending?: boolean;
   progress?: { completed: number; total: number } | null;
   note?: string;
   source?: string | null;
+  adapter?: string | null;
+  verdict?: ApiVerdict | null;
   report?: RunScenario;
   passed?: boolean;
   error?: string;
@@ -59,6 +77,8 @@ const EXAMPLES = [
 
 const PLACEHOLDER =
   'Describe a strategy — e.g. "mean-reversion on AAPL, buy 2σ below the 20-day average"';
+const REFINE_PLACEHOLDER =
+  'Ask for a change — e.g. "make entries stricter and reduce drawdown"';
 const REFINE_PROMPT_KEY = "apollo:refine-prompt";
 
 function consumeRefinementPrompt(): string {
@@ -70,6 +90,87 @@ function consumeRefinementPrompt(): string {
 
 function ignoreRefreshError(err: unknown): void {
   void err;
+}
+
+function refinementContext(active: Active | null): GenerationContext | undefined {
+  if (!active?.source) return undefined;
+  return {
+    source: active.source,
+    prompt: active.prompt,
+    note: active.note,
+  };
+}
+
+function appendApolloTurn(turns: ChatTurn[], text: string): ChatTurn[] {
+  return [...turns, { role: "apollo", text }];
+}
+
+function isRevisionRequest(prompt: string): boolean {
+  return /^(make|add|change|remove|try|use|switch|tune|optimi[sz]e|reduce|increase|tighten|loosen|rewrite|update|revise|replace|include|exclude)\b/i.test(
+    prompt.trim(),
+  );
+}
+
+function isQuestionAboutActiveStrategy(prompt: string, active: Active | null): boolean {
+  if (!active?.report || active.phase === "generating" || active.phase === "running") return false;
+  if (isRevisionRequest(prompt)) return false;
+  const p = prompt.trim().toLowerCase();
+  return (
+    p.endsWith("?") ||
+    /^(why|what|how|where|when|which|explain|analy[sz]e|diagnose|summari[sz]e|tell me|show me)\b/.test(
+      p,
+    ) ||
+    /\b(fail|fails|failed|reject|rejected|cause|causes|profitable|drawdown|sharpe|trades|risk|edge|overfit)\b/.test(
+      p,
+    )
+  );
+}
+
+function answerStrategyQuestion(question: string, active: Active): string {
+  const report = active.report;
+  if (!report) return "I need a completed preview before I can analyze the strategy.";
+
+  const q = question.toLowerCase();
+  const m = report.metrics;
+  const adapterNote =
+    active.adapter === "toy"
+      ? "\n\nOne important product note: this preview is still running on the toy synthetic adapter, so the ticker name is not real SLS market data yet. Once the market-data adapter is connected, this same question should be answered against actual SLS candles."
+      : "";
+
+  if (/\b(fail|fails|failed|reject|rejected|cause|causes|not profitable|why)\b/.test(q)) {
+    return [
+      `It failed because the validation gate did not find a durable edge: ${report.reason}`,
+      "",
+      `The key numbers are train Sharpe ${m.sharpeTrain}, held-out Sharpe ${m.sharpeTest}, edge retained ${m.retention}, out-of-sample return ${m.oosReturn}, max drawdown ${m.maxDrawdown}, and ${m.oosTrades} held-out trades across ${m.windows} windows.`,
+      "",
+      "Practically, that means the entry and exit rules were not producing enough positive expectancy even before we got to the serious out-of-sample question. For a moving-average style strategy, common causes are late entries, whipsaw in range-bound price action, too few clean trends, and exits that give back gains before the gate can confirm a stable edge.",
+      adapterNote.trim(),
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
+
+  if (/\b(improve|fix|better|profitable|change|try)\b/.test(q)) {
+    return [
+      "The next useful revisions would be specific and testable: add a volatility filter, require trend confirmation, use a stop or time exit, reduce whipsaw with a wider slow/fast gap, or switch from trend following to mean reversion if the series is range-bound.",
+      "",
+      "Ask me for one concrete change, for example: “add an ATR volatility filter,” “make exits faster,” or “try mean reversion instead.” I’ll revise the code and run the gate again.",
+      adapterNote.trim(),
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
+
+  return [
+    `Here is the current read: ${report.reason}`,
+    "",
+    `Train Sharpe is ${m.sharpeTrain}, held-out Sharpe is ${m.sharpeTest}, retention is ${m.retention}, out-of-sample return is ${m.oosReturn}, max drawdown is ${m.maxDrawdown}, and the gate saw ${m.oosTrades} held-out trades across ${m.windows} windows.`,
+    "",
+    "You can ask why it passed or failed, what to change, where the risk is, or ask for a concrete revision and I’ll re-run it.",
+    adapterNote.trim(),
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 export function Workspace() {
@@ -84,12 +185,25 @@ export function Workspace() {
     (prompt: string) => {
       const p = prompt.trim();
       if (!p) return;
+      const context = refinementContext(active);
+      const turns: ChatTurn[] = active?.turns?.length
+        ? [...active.turns, { role: "user", text: p }]
+        : [{ role: "user", text: p }];
+
       setTab("log");
-      setActive({ prompt: p, phase: "generating", progress: null });
+      setActive({
+        prompt: p,
+        phase: "generating",
+        lastInteraction: "run",
+        progress: null,
+        turns,
+        source: context?.source ?? null,
+        adapter: active?.adapter ?? null,
+      });
       setValue("");
       setHasRefinement(false);
 
-      submitGeneration(p, DEFAULT_TIER)
+      submitGeneration(p, DEFAULT_TIER, context)
         .then(({ id }) => {
           setActive((a) => (a ? { ...a, apiId: id } : a));
           void refresh().catch(ignoreRefreshError);
@@ -103,6 +217,7 @@ export function Workspace() {
                       progress: snap.progress,
                       note: snap.note ?? a.note,
                       source: snap.source ?? a.source,
+                      adapter: snap.adapter ?? a.adapter,
                     }
                   : a,
               ),
@@ -110,16 +225,29 @@ export function Workspace() {
               setActive((a) => {
                 if (!a) return a;
                 if (snap.state === "completed" && snap.verdict) {
+                  const result = snap.verdict.passed
+                    ? `Preview passed: ${snap.verdict.reason}`
+                    : `Preview rejected: ${snap.verdict.reason}`;
+                  const reply = snap.note ? `${snap.note}\n\n${result}` : result;
                   return {
                     ...a,
                     phase: "done",
                     passed: snap.verdict.passed,
                     report: verdictToReport(snap.verdict, a.prompt),
+                    verdict: snap.verdict,
                     note: snap.note ?? a.note,
                     source: snap.source ?? a.source,
+                    adapter: snap.adapter ?? a.adapter,
+                    turns: appendApolloTurn(a.turns, reply),
                   };
                 }
-                return { ...a, phase: "error", error: snap.error ?? "The run failed." };
+                const error = snap.error ?? "The run failed.";
+                return {
+                  ...a,
+                  phase: "error",
+                  error,
+                  turns: appendApolloTurn(a.turns, `I could not finish that revision: ${error}`),
+                };
               });
               void refresh().catch(ignoreRefreshError);
             },
@@ -139,22 +267,86 @@ export function Workspace() {
                   phase: "error",
                   error:
                     "Can't reach the Apollo API — start it with: uv run uvicorn green.api:app --port 8000",
+                  turns: appendApolloTurn(
+                    a.turns,
+                    "I could not reach the Apollo API. Start it with: uv run uvicorn green.api:app --port 8000",
+                  ),
                 }
               : a,
           ),
         );
     },
-    [refresh],
+    [active, refresh],
+  );
+
+  const answerQuestion = useCallback(
+    (prompt: string) => {
+      const p = prompt.trim();
+      if (!p || !active?.source) return;
+      const source = active.source;
+      const snapshot = active;
+      setTab("log");
+      setValue("");
+      setHasRefinement(false);
+      setActive((a) =>
+        a
+          ? {
+              ...a,
+              lastInteraction: "chat",
+              chatPending: true,
+              turns: [...a.turns, { role: "user", text: p }],
+            }
+          : a,
+      );
+
+      askStrategyQuestion({
+        question: p,
+        source,
+        prompt: snapshot.prompt,
+        note: snapshot.note,
+        verdict: snapshot.verdict ?? undefined,
+        adapter: snapshot.adapter,
+      })
+        .then((answer) =>
+          setActive((a) =>
+            a
+              ? {
+                  ...a,
+                  chatPending: false,
+                  turns: appendApolloTurn(a.turns, answer),
+                }
+              : a,
+          ),
+        )
+        .catch(() =>
+          setActive((a) =>
+            a
+              ? {
+                  ...a,
+                  chatPending: false,
+                  turns: appendApolloTurn(a.turns, answerStrategyQuestion(p, snapshot)),
+                }
+              : a,
+          ),
+        );
+    },
+    [active],
   );
 
   function onSubmit() {
-    build(value);
+    if (isQuestionAboutActiveStrategy(value, active)) {
+      answerQuestion(value);
+    } else {
+      build(value);
+    }
     taRef.current?.focus();
   }
 
   const status = statusOf(active);
   const name = active ? truncate(active.prompt, 32) : "untitled";
-  const busy = active?.phase === "generating" || active?.phase === "running";
+  const busy = active?.phase === "generating" || active?.phase === "running" || !!active?.chatPending;
+  const canRefine = Boolean(active?.source && !busy);
+  const questionMode = isQuestionAboutActiveStrategy(value, active);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -232,7 +424,7 @@ export function Workspace() {
                     }
                   }}
                   rows={1}
-                  placeholder={PLACEHOLDER}
+                  placeholder={canRefine ? REFINE_PLACEHOLDER : PLACEHOLDER}
                   className="field-sizing-content max-h-32 w-full resize-none bg-transparent font-mono text-[12px] leading-relaxed text-text-dim placeholder:text-faint focus:outline-none"
                 />
                 <button
@@ -241,7 +433,7 @@ export function Workspace() {
                   className="accent-gradient focusable inline-flex h-8 shrink-0 items-center gap-1.5 rounded px-3 font-mono text-[11px] font-medium uppercase tracking-wider text-accent-ink transition-[filter,opacity] hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ArrowUp className="h-3.5 w-3.5" />}
-                  Build
+                  {questionMode ? "Ask" : canRefine ? "Refine" : "Build"}
                 </button>
               </div>
             </div>
@@ -251,6 +443,8 @@ export function Workspace() {
               <Chip>templates</Chip>
               <Chip>fast sandbox preview</Chip>
               <Chip>promote to validation</Chip>
+              {canRefine && <Chip>revision context active</Chip>}
+              {questionMode && <Chip>question mode</Chip>}
               {hasRefinement && <Chip>rejection context loaded</Chip>}
             </div>
           </div>
@@ -324,23 +518,63 @@ function BuildLog({ active }: { active: Active }) {
 
   const toneClass = (t?: string) =>
     t === "accent" ? "text-text-dim" : t === "pass" ? "text-pass" : t === "reject" ? "text-reject" : "text-muted";
+  const visibleTurns =
+    active.lastInteraction === "chat"
+      ? active.turns
+      : active.turns.length > 1
+        ? active.turns.slice(0, -1)
+        : [];
 
   return (
     <div className="mx-auto max-w-3xl px-4 py-5">
-      {active.note && (
+      {visibleTurns.length > 0 && (
+        <div className="mb-3 space-y-2">
+          {visibleTurns.map((turn, i) => (
+            <div
+              key={`${turn.role}-${i}`}
+              className={`rounded border p-3 ${
+                turn.role === "user"
+                  ? "border-accent/25 bg-accent/5"
+                  : "border-line bg-surface"
+              }`}
+            >
+              <div className="mb-1 font-mono text-[10px] uppercase tracking-[0.18em] text-faint">
+                {turn.role === "user" ? "You" : "Apollo"}
+              </div>
+              <p className="whitespace-pre-wrap text-xs leading-relaxed text-text-dim">
+                {turn.text}
+              </p>
+            </div>
+          ))}
+          {active.chatPending && (
+            <div className="rounded border border-line bg-surface p-3">
+              <div className="mb-1 font-mono text-[10px] uppercase tracking-[0.18em] text-faint">
+                Apollo
+              </div>
+              <div className="flex items-center gap-2 text-xs leading-relaxed text-muted">
+                <Loader2 className="h-3.5 w-3.5 animate-spin text-accent" />
+                Reading the strategy evidence…
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+      {active.note && active.lastInteraction !== "chat" && (
         <div className="mb-3 flex gap-3 rounded border border-line bg-surface p-3">
           <ApolloMark className="mt-0.5 h-5 w-5 shrink-0" />
           <p className="text-xs leading-relaxed text-text-dim">{active.note}</p>
         </div>
       )}
-      <div className="rounded border border-line bg-bg-soft/40 p-3 font-mono text-[12px] leading-relaxed">
-        {lines.map((l, i) => (
-          <div key={i} className={`flex items-start gap-2 ${toneClass(l.tone)}`}>
-            {l.spin && <Loader2 className="mt-0.5 h-3 w-3 shrink-0 animate-spin text-accent" />}
-            <span className="whitespace-pre-wrap break-words">{l.text}</span>
-          </div>
-        ))}
-      </div>
+      {active.lastInteraction !== "chat" && (
+        <div className="rounded border border-line bg-bg-soft/40 p-3 font-mono text-[12px] leading-relaxed">
+          {lines.map((l, i) => (
+            <div key={i} className={`flex items-start gap-2 ${toneClass(l.tone)}`}>
+              {l.spin && <Loader2 className="mt-0.5 h-3 w-3 shrink-0 animate-spin text-accent" />}
+              <span className="whitespace-pre-wrap break-words">{l.text}</span>
+            </div>
+          ))}
+        </div>
+      )}
       {active.phase === "done" && active.apiId && (
         <Link
           href={`/app/runs/${active.apiId}`}

@@ -1,12 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { ArrowDownWideNarrow, ChevronRight, Plus, Search } from "lucide-react";
+import { ArrowDownWideNarrow, ChevronRight, Plus, Search, Star } from "lucide-react";
 import { PageFrame, FadeUp } from "@/components/app/page-frame";
 import { Sparkline } from "@/components/app/sparkline";
 import { relativeTime } from "@/components/app/run-row";
-import { listStrategies, type StrategySummary, type RunSummary } from "@/lib/api";
+import { listStrategies, setStrategyPromoted, type StrategySummary } from "@/lib/api";
 
 type Filter = "all" | "validated" | "rejected" | "active";
 type Sort = "recent" | "validated" | "runs";
@@ -27,20 +27,30 @@ export default function StrategiesPage() {
   const [sort, setSort] = useState<Sort>("recent");
   const [error, setError] = useState<string | null>(null);
 
+  const reload = useCallback(async () => {
+    try {
+      setStrategies(await listStrategies());
+    } catch {
+      setError("Could not load strategies. Check that the API is running.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
-    let cancelled = false;
-    listStrategies()
-      .then((rows) => {
-        if (!cancelled) setStrategies(rows);
-      })
-      .catch(() => {
-        if (!cancelled) setError("Could not load strategies. Check that the API is running.");
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
+    let active = true;
+    void (async () => {
+      try {
+        const rows = await listStrategies();
+        if (active) setStrategies(rows);
+      } catch {
+        if (active) setError("Could not load strategies. Check that the API is running.");
+      } finally {
+        if (active) setLoading(false);
+      }
+    })();
     return () => {
-      cancelled = true;
+      active = false;
     };
   }, []);
 
@@ -172,7 +182,9 @@ export default function StrategiesPage() {
                   : "No matches."}
               </p>
             ) : (
-              rows.map((strategy) => <StrategyRow key={strategy.id} strategy={strategy} />)
+              rows.map((strategy) => (
+                <StrategyRow key={strategy.id} strategy={strategy} onToggle={reload} />
+              ))
             )}
           </div>
         </div>
@@ -181,13 +193,20 @@ export default function StrategiesPage() {
   );
 }
 
-function StrategyRow({ strategy }: { strategy: StrategySummary }) {
-  const run = strategy.latest_validation ?? strategy.latest_run;
-  const tone = run?.passed === true ? "pass" : run?.passed === false ? "reject" : "neutral";
+function StrategyRow({ strategy, onToggle }: { strategy: StrategySummary; onToggle: () => void }) {
+  const evidenceRun = strategy.latest_validation ?? strategy.latest_run;
+  const tone = evidenceRun?.passed === true ? "pass" : evidenceRun?.passed === false ? "reject" : "neutral";
+
+  const togglePromote = (e: React.MouseEvent) => {
+    e.preventDefault(); // row is a Link — don't navigate
+    e.stopPropagation();
+    void setStrategyPromoted(strategy.id, !strategy.promoted).then(onToggle);
+  };
+
   return (
     <Link
       href={`/app/strategies/${strategy.id}`}
-      className="group grid grid-cols-[minmax(0,2fr)_7rem_7rem_6rem_minmax(8rem,1.2fr)_1.25rem] items-center gap-4 border-b border-line px-3 py-2.5 transition-colors hover:bg-white/[0.025]"
+      className="group grid grid-cols-[minmax(0,2fr)_7rem_7rem_6rem_minmax(8rem,1.2fr)_2rem_1.25rem] items-center gap-4 border-b border-line px-3 py-2.5 transition-colors hover:bg-white/[0.025]"
     >
       <div className="min-w-0">
         <div className="truncate text-sm font-medium text-text">{strategy.title}</div>
@@ -195,25 +214,42 @@ function StrategyRow({ strategy }: { strategy: StrategySummary }) {
           {[strategy.description || null, relativeTime(strategy.updated_at)].filter(Boolean).join(" · ")}
         </div>
       </div>
-      <Status run={run} />
+      <Status strategy={strategy} />
       <span className="nums text-sm text-text-dim">v{strategy.versions_count}</span>
       <span className="nums text-sm text-text-dim">{strategy.runs_count}</span>
       <div className="h-9">
-        {run?.spark && run.spark.length > 1 ? (
-          <Sparkline values={run.spark} tone={tone} className="h-8 w-full" id={`strategy-${strategy.id}`} />
+        {evidenceRun?.spark && evidenceRun.spark.length > 1 ? (
+          <Sparkline values={evidenceRun.spark} tone={tone} className="h-8 w-full" id={`strategy-${strategy.id}`} />
         ) : (
           <span className="font-mono text-[11px] text-faint">no completed run</span>
         )}
       </div>
+      <button
+        onClick={togglePromote}
+        aria-label={strategy.promoted ? "Demote" : "Promote (champion)"}
+        title={strategy.promoted ? "Promoted — click to demote" : "Promote to champion"}
+        className="focusable flex h-7 w-7 items-center justify-center rounded transition-colors hover:bg-white/[0.06]"
+      >
+        <Star
+          className={`h-4 w-4 ${strategy.promoted ? "fill-accent text-accent" : "text-faint hover:text-text"}`}
+        />
+      </button>
       <ChevronRight className="h-4 w-4 text-faint transition-colors group-hover:text-accent" />
     </Link>
   );
 }
 
-function Status({ run }: { run?: RunSummary | null }) {
-  if (!run) {
+function Status({ strategy }: { strategy: StrategySummary }) {
+  const validation = strategy.latest_validation;
+  const latestRun = strategy.latest_run;
+
+  if (!validation && !latestRun) {
     return <span className="font-mono text-[10px] uppercase tracking-wider text-faint">Draft</span>;
   }
+
+  const run = validation ?? latestRun;
+  if (!run) return null;
+
   if (run.state === "queued" || run.state === "generating" || run.state === "running") {
     return (
       <span className="inline-flex w-fit items-center gap-1.5 rounded border border-accent/25 bg-accent/10 px-2 py-1 font-mono text-[10px] uppercase tracking-wider text-accent">
@@ -222,7 +258,25 @@ function Status({ run }: { run?: RunSummary | null }) {
       </span>
     );
   }
-  const pass = run.passed === true;
+
+  if (!validation) {
+    if (run.state === "error") {
+      return (
+        <span className="inline-flex w-fit items-center gap-1.5 rounded border border-reject/25 bg-reject/10 px-2 py-1 font-mono text-[10px] uppercase tracking-wider text-reject">
+          <span className="h-1.5 w-1.5 rounded-full bg-reject" />
+          Error
+        </span>
+      );
+    }
+    return (
+      <span className="inline-flex w-fit items-center gap-1.5 rounded border border-line bg-white/[0.03] px-2 py-1 font-mono text-[10px] uppercase tracking-wider text-text-dim">
+        <span className="h-1.5 w-1.5 rounded-full bg-muted" />
+        Backtested
+      </span>
+    );
+  }
+
+  const pass = validation.passed === true;
   return (
     <span
       className={`inline-flex w-fit items-center gap-1.5 rounded border px-2 py-1 font-mono text-[10px] uppercase tracking-wider ${
@@ -230,7 +284,7 @@ function Status({ run }: { run?: RunSummary | null }) {
       }`}
     >
       <span className={`h-1.5 w-1.5 rounded-full ${pass ? "bg-pass" : "bg-reject"}`} />
-      {pass ? "Validated" : run.state === "error" ? "Error" : "Rejected"}
+      {pass ? "Validated" : "Rejected"}
     </span>
   );
 }

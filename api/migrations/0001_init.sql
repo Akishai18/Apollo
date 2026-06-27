@@ -3,7 +3,7 @@
 -- This is the production deployment artifact. Run it against your Supabase
 -- project (SQL editor, or `psql "$DATABASE_URL" -f api/migrations/0001_init.sql`).
 -- The application uses the same `RunStore` interface it uses for SQLite; only
--- the backend (a Postgres DSN) and auth (the project JWT secret) change.
+-- the backend (a Postgres DSN) and auth (Supabase JWTs) change.
 --
 -- Isolation is enforced twice: the API scopes every read to the caller's user
 -- id (application layer), and the RLS policies below scope every row to

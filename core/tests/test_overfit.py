@@ -71,10 +71,14 @@ def test_expand_grid_is_deterministic_cartesian_product() -> None:
 
 
 def test_dataset_window_is_physically_sliced() -> None:
-    dataset = Dataset(series={"R": {"close": tuple(float(i) for i in range(10))}})
+    dataset = Dataset(
+        series={"R": {"close": tuple(float(i) for i in range(10))}},
+        dates=tuple(f"2024-01-{i + 1:02d}" for i in range(10)),
+    )
     sub = dataset.window(3, 7)
     assert sub.length == 4
     assert sub.series["R"]["close"] == (3.0, 4.0, 5.0, 6.0)
+    assert sub.dates == ("2024-01-04", "2024-01-05", "2024-01-06", "2024-01-07")
     with pytest.raises(ValueError):
         dataset.window(5, 11)
     with pytest.raises(ValueError):
@@ -118,6 +122,26 @@ def test_verdict_carries_equity_curves_for_the_visuals() -> None:
         assert len(w.test_equity) == 100
         assert w.train_equity[0][0] == 0 and w.test_equity[0][0] == 0
         assert all(isinstance(equity, float) for _, equity in w.test_equity)
+
+
+def test_verdict_carries_window_dates_when_dataset_has_calendar() -> None:
+    adapter = ToyAdapter()
+    dataset = Dataset(
+        series={"SYN": {"close": tuple(100.0 + i for i in range(12))}},
+        dates=tuple(f"2024-01-{i + 1:02d}" for i in range(12)),
+    )
+    verdict = run_walk_forward(
+        MeanReversion,
+        adapter,
+        dataset,
+        {"symbol": ["SYN"], "lookback": [2], "quantity": [1]},
+        train_size=6,
+        test_size=3,
+        min_oos_trades=0,
+    )
+    first = verdict.windows[0]
+    assert first.train_dates == tuple(f"2024-01-{i + 1:02d}" for i in range(6))
+    assert first.test_dates == ("2024-01-07", "2024-01-08", "2024-01-09")
 
 
 def test_curve_fit_strategy_is_rejected_with_legible_reason() -> None:

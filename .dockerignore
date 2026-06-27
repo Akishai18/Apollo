@@ -1,0 +1,17 @@
+# Not needed in the API image (and keeps secrets out).
+.env
+.env.*
+.git
+web
+data
+scripts
+trading
+validation
+green.db
+**/.venv
+.venv
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.ruff_cache
+*.md

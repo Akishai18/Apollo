@@ -20,12 +20,26 @@ from __future__ import annotations
 import re
 import sqlite3
 import threading
+import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, cast
 
-from green.api.models import ProgressInfo, RunRequest, RunResponse, RunState, RunSummary
+from green.api.models import (
+    ProgressInfo,
+    RunRequest,
+    RunResponse,
+    RunState,
+    RunSummary,
+    StrategyCreate,
+    StrategyDraftCreate,
+    StrategyDraftRecord,
+    StrategyDraftUpdate,
+    StrategyRecord,
+    StrategyStatus,
+    StrategyVersionRecord,
+)
 from green.core import Verdict
 
 
@@ -60,6 +74,14 @@ class StoredRun:
             note=self.note,
             prompt=self.prompt,
             source=self.request.source,
+            symbol=symbol_of(self.request),
+            kind=kind_from_class(self.request.class_name),
+            run_kind=self.request.run_kind,
+            strategy_id=self.request.strategy_id,
+            strategy_version_id=self.request.strategy_version_id,
+            train_size=self.request.train_size,
+            test_size=self.request.test_size,
+            adapter=self.request.adapter.name,
         )
 
     def to_summary(self) -> RunSummary:
@@ -68,8 +90,11 @@ class StoredRun:
             id=self.id,
             state=self.state,
             title=self._title(),
-            symbol=_symbol(self.request),
-            kind=_kind_from_class(self.request.class_name),
+            symbol=symbol_of(self.request),
+            kind=kind_from_class(self.request.class_name),
+            run_kind=self.request.run_kind,
+            strategy_id=self.request.strategy_id,
+            strategy_version_id=self.request.strategy_version_id,
             passed=v.passed if v is not None else None,
             reason=v.reason if v is not None else None,
             oos_sharpe=v.test_sharpe if v is not None else None,
@@ -111,14 +136,14 @@ def _oos_equity(verdict: Verdict) -> tuple[float, ...]:
     return _downsample(series)
 
 
-def _kind_from_class(name: str | None) -> str | None:
+def kind_from_class(name: str | None) -> str | None:
     if not name:
         return None
     words = re.findall(r"[A-Z][a-z0-9]*", name)
     return " ".join(w.lower() for w in words) if words else name.lower()
 
 
-def _symbol(request: RunRequest) -> str | None:
+def symbol_of(request: RunRequest) -> str | None:
     vals = request.grid.get("symbol")
     return str(vals[0]) if vals else None
 
@@ -149,6 +174,51 @@ class RunStore(ABC):
     @abstractmethod
     def list_for_user(self, user_id: str) -> list[StoredRun]: ...
 
+    @abstractmethod
+    def create_strategy(self, user_id: str, body: StrategyCreate) -> StrategyRecord: ...
+
+    @abstractmethod
+    def list_strategies_for_user(self, user_id: str) -> list[StrategyRecord]: ...
+
+    @abstractmethod
+    def get_strategy_for_user(self, strategy_id: str, user_id: str) -> StrategyRecord | None: ...
+
+    @abstractmethod
+    def create_draft(
+        self, strategy_id: str, user_id: str, body: StrategyDraftCreate
+    ) -> StrategyDraftRecord | None: ...
+
+    @abstractmethod
+    def update_draft(
+        self, draft_id: str, user_id: str, body: StrategyDraftUpdate
+    ) -> StrategyDraftRecord | None: ...
+
+    @abstractmethod
+    def get_draft_for_user(self, draft_id: str, user_id: str) -> StrategyDraftRecord | None: ...
+
+    @abstractmethod
+    def list_drafts_for_strategy(
+        self, strategy_id: str, user_id: str
+    ) -> list[StrategyDraftRecord]: ...
+
+    @abstractmethod
+    def create_version_from_draft(
+        self, draft_id: str, user_id: str
+    ) -> StrategyVersionRecord | None: ...
+
+    @abstractmethod
+    def get_version_for_user(
+        self, version_id: str, user_id: str
+    ) -> StrategyVersionRecord | None: ...
+
+    @abstractmethod
+    def list_versions_for_strategy(
+        self, strategy_id: str, user_id: str
+    ) -> list[StrategyVersionRecord]: ...
+
+    @abstractmethod
+    def list_runs_for_strategy(self, strategy_id: str, user_id: str) -> list[StoredRun]: ...
+
     def get_for_user(self, run_id: str, user_id: str) -> StoredRun | None:
         """Ownership-checked read: returns None for both 'missing' and 'someone
         else's' so existence never leaks across users."""
@@ -161,6 +231,12 @@ class RunStore(ABC):
 class InMemoryRunStore(RunStore):
     def __init__(self) -> None:
         self._runs: dict[str, StoredRun] = {}
+        self._strategies: dict[str, StrategyRecord] = {}
+        self._strategy_users: dict[str, str] = {}
+        self._drafts: dict[str, StrategyDraftRecord] = {}
+        self._draft_users: dict[str, str] = {}
+        self._versions: dict[str, StrategyVersionRecord] = {}
+        self._version_users: dict[str, str] = {}
         self._lock = threading.Lock()
 
     def create(self, run_id: str, user_id: str, request: RunRequest) -> StoredRun:
@@ -217,11 +293,152 @@ class InMemoryRunStore(RunStore):
         with self._lock:
             return [r for r in self._runs.values() if r.user_id == user_id]
 
+    def create_strategy(self, user_id: str, body: StrategyCreate) -> StrategyRecord:
+        now = _now_iso()
+        record = StrategyRecord(
+            id=uuid.uuid4().hex,
+            title=body.title,
+            description=body.description,
+            status=StrategyStatus.ACTIVE,
+            created_at=now,
+            updated_at=now,
+        )
+        with self._lock:
+            self._strategies[record.id] = record
+            self._strategy_users[record.id] = user_id
+        return record
+
+    def list_strategies_for_user(self, user_id: str) -> list[StrategyRecord]:
+        with self._lock:
+            return [
+                s
+                for sid, s in self._strategies.items()
+                if self._strategy_users.get(sid) == user_id
+            ]
+
+    def get_strategy_for_user(self, strategy_id: str, user_id: str) -> StrategyRecord | None:
+        with self._lock:
+            if self._strategy_users.get(strategy_id) != user_id:
+                return None
+            return self._strategies.get(strategy_id)
+
+    def create_draft(
+        self, strategy_id: str, user_id: str, body: StrategyDraftCreate
+    ) -> StrategyDraftRecord | None:
+        now = _now_iso()
+        with self._lock:
+            if self._strategy_users.get(strategy_id) != user_id:
+                return None
+            record = StrategyDraftRecord(
+                **body.model_dump(),
+                id=uuid.uuid4().hex,
+                strategy_id=strategy_id,
+                created_at=now,
+                updated_at=now,
+            )
+            self._drafts[record.id] = record
+            self._draft_users[record.id] = user_id
+            self._touch_strategy(strategy_id, now)
+            return record
+
+    def update_draft(
+        self, draft_id: str, user_id: str, body: StrategyDraftUpdate
+    ) -> StrategyDraftRecord | None:
+        now = _now_iso()
+        with self._lock:
+            current = self._drafts.get(draft_id)
+            if current is None or self._draft_users.get(draft_id) != user_id:
+                return None
+            data = current.model_dump()
+            for key, value in body.model_dump(exclude_unset=True).items():
+                data[key] = value
+            data["updated_at"] = now
+            record = StrategyDraftRecord.model_validate(data)
+            self._drafts[draft_id] = record
+            self._touch_strategy(record.strategy_id, now)
+            return record
+
+    def get_draft_for_user(self, draft_id: str, user_id: str) -> StrategyDraftRecord | None:
+        with self._lock:
+            if self._draft_users.get(draft_id) != user_id:
+                return None
+            return self._drafts.get(draft_id)
+
+    def list_drafts_for_strategy(
+        self, strategy_id: str, user_id: str
+    ) -> list[StrategyDraftRecord]:
+        with self._lock:
+            if self._strategy_users.get(strategy_id) != user_id:
+                return []
+            return [d for d in self._drafts.values() if d.strategy_id == strategy_id]
+
+    def create_version_from_draft(
+        self, draft_id: str, user_id: str
+    ) -> StrategyVersionRecord | None:
+        now = _now_iso()
+        with self._lock:
+            draft = self._drafts.get(draft_id)
+            if draft is None or self._draft_users.get(draft_id) != user_id:
+                return None
+            version_number = 1 + max(
+                (
+                    v.version_number
+                    for v in self._versions.values()
+                    if v.strategy_id == draft.strategy_id
+                ),
+                default=0,
+            )
+            record = StrategyVersionRecord(
+                **draft.model_dump(
+                    exclude={"id", "created_at", "updated_at"},
+                ),
+                id=uuid.uuid4().hex,
+                draft_id=draft_id,
+                version_number=version_number,
+                frozen_at=now,
+            )
+            self._versions[record.id] = record
+            self._version_users[record.id] = user_id
+            self._touch_strategy(record.strategy_id, now)
+            return record
+
+    def get_version_for_user(
+        self, version_id: str, user_id: str
+    ) -> StrategyVersionRecord | None:
+        with self._lock:
+            if self._version_users.get(version_id) != user_id:
+                return None
+            return self._versions.get(version_id)
+
+    def list_versions_for_strategy(
+        self, strategy_id: str, user_id: str
+    ) -> list[StrategyVersionRecord]:
+        with self._lock:
+            if self._strategy_users.get(strategy_id) != user_id:
+                return []
+            versions = [v for v in self._versions.values() if v.strategy_id == strategy_id]
+        return sorted(versions, key=lambda v: v.version_number)
+
+    def list_runs_for_strategy(self, strategy_id: str, user_id: str) -> list[StoredRun]:
+        with self._lock:
+            return [
+                r
+                for r in self._runs.values()
+                if r.user_id == user_id and r.request.strategy_id == strategy_id
+            ]
+
+    def _touch_strategy(self, strategy_id: str, now: str) -> None:
+        current = self._strategies.get(strategy_id)
+        if current is not None:
+            self._strategies[strategy_id] = current.model_copy(update={"updated_at": now})
+
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
     id           TEXT PRIMARY KEY,
     user_id      TEXT NOT NULL,
+    strategy_id  TEXT,
+    strategy_version_id TEXT,
     state        TEXT NOT NULL,
     request_json TEXT NOT NULL,
     progress_json TEXT,
@@ -233,6 +450,41 @@ CREATE TABLE IF NOT EXISTS runs (
     updated_at   TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS runs_user_id ON runs (user_id);
+CREATE INDEX IF NOT EXISTS runs_strategy_id ON runs (strategy_id);
+
+CREATE TABLE IF NOT EXISTS strategies (
+    id           TEXT PRIMARY KEY,
+    user_id      TEXT NOT NULL,
+    title        TEXT NOT NULL,
+    description  TEXT NOT NULL,
+    status       TEXT NOT NULL,
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS strategies_user_id ON strategies (user_id);
+
+CREATE TABLE IF NOT EXISTS strategy_drafts (
+    id           TEXT PRIMARY KEY,
+    strategy_id  TEXT NOT NULL,
+    user_id      TEXT NOT NULL,
+    draft_json   TEXT NOT NULL,
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS strategy_drafts_strategy_id ON strategy_drafts (strategy_id);
+CREATE INDEX IF NOT EXISTS strategy_drafts_user_id ON strategy_drafts (user_id);
+
+CREATE TABLE IF NOT EXISTS strategy_versions (
+    id             TEXT PRIMARY KEY,
+    strategy_id    TEXT NOT NULL,
+    draft_id       TEXT NOT NULL,
+    user_id        TEXT NOT NULL,
+    version_number INTEGER NOT NULL,
+    version_json   TEXT NOT NULL,
+    frozen_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS strategy_versions_strategy_id ON strategy_versions (strategy_id);
+CREATE INDEX IF NOT EXISTS strategy_versions_user_id ON strategy_versions (user_id);
 """
 
 
@@ -248,6 +500,10 @@ class SqliteRunStore(RunStore):
             self._conn.executescript(_SCHEMA)
             # Additive migrations for DBs created before these columns existed.
             cols = {r[1] for r in self._conn.execute("PRAGMA table_info(runs)").fetchall()}
+            if "strategy_id" not in cols:
+                self._conn.execute("ALTER TABLE runs ADD COLUMN strategy_id TEXT")
+            if "strategy_version_id" not in cols:
+                self._conn.execute("ALTER TABLE runs ADD COLUMN strategy_version_id TEXT")
             if "note" not in cols:
                 self._conn.execute("ALTER TABLE runs ADD COLUMN note TEXT")
             if "prompt" not in cols:
@@ -266,9 +522,18 @@ class SqliteRunStore(RunStore):
         )
         with self._lock:
             self._conn.execute(
-                "INSERT INTO runs (id, user_id, state, request_json, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (run_id, user_id, run.state.value, request.model_dump_json(), now, now),
+                "INSERT INTO runs (id, user_id, strategy_id, strategy_version_id, state, "
+                "request_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    run_id,
+                    user_id,
+                    request.strategy_id,
+                    request.strategy_version_id,
+                    run.state.value,
+                    request.model_dump_json(),
+                    now,
+                    now,
+                ),
             )
             self._conn.commit()
         return run
@@ -318,6 +583,10 @@ class SqliteRunStore(RunStore):
         if request is not None:
             sets.append("request_json = ?")
             values.append(request.model_dump_json())
+            sets.append("strategy_id = ?")
+            values.append(request.strategy_id)
+            sets.append("strategy_version_id = ?")
+            values.append(request.strategy_version_id)
         sets.append("updated_at = ?")
         values.append(_now_iso())
         values.append(run_id)
@@ -332,6 +601,200 @@ class SqliteRunStore(RunStore):
                 "error, note, prompt, created_at, updated_at "
                 "FROM runs WHERE user_id = ? ORDER BY created_at",
                 (user_id,),
+            )
+            rows = cursor.fetchall()
+        return [self._row_to_run(cast("tuple[Any, ...]", row)) for row in rows]
+
+    def create_strategy(self, user_id: str, body: StrategyCreate) -> StrategyRecord:
+        now = _now_iso()
+        record = StrategyRecord(
+            id=uuid.uuid4().hex,
+            title=body.title,
+            description=body.description,
+            status=StrategyStatus.ACTIVE,
+            created_at=now,
+            updated_at=now,
+        )
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO strategies "
+                "(id, user_id, title, description, status, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    record.id,
+                    user_id,
+                    record.title,
+                    record.description,
+                    record.status.value,
+                    record.created_at,
+                    record.updated_at,
+                ),
+            )
+            self._conn.commit()
+        return record
+
+    def list_strategies_for_user(self, user_id: str) -> list[StrategyRecord]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, title, description, status, created_at, updated_at "
+                "FROM strategies WHERE user_id = ? ORDER BY updated_at DESC",
+                (user_id,),
+            ).fetchall()
+        return [self._row_to_strategy(cast("tuple[Any, ...]", row)) for row in rows]
+
+    def get_strategy_for_user(self, strategy_id: str, user_id: str) -> StrategyRecord | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT id, title, description, status, created_at, updated_at "
+                "FROM strategies WHERE id = ? AND user_id = ?",
+                (strategy_id, user_id),
+            ).fetchone()
+        return self._row_to_strategy(cast("tuple[Any, ...]", row)) if row else None
+
+    def create_draft(
+        self, strategy_id: str, user_id: str, body: StrategyDraftCreate
+    ) -> StrategyDraftRecord | None:
+        now = _now_iso()
+        if self.get_strategy_for_user(strategy_id, user_id) is None:
+            return None
+        record = StrategyDraftRecord(
+            **body.model_dump(),
+            id=uuid.uuid4().hex,
+            strategy_id=strategy_id,
+            created_at=now,
+            updated_at=now,
+        )
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO strategy_drafts "
+                "(id, strategy_id, user_id, draft_json, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    record.id,
+                    strategy_id,
+                    user_id,
+                    record.model_dump_json(),
+                    now,
+                    now,
+                ),
+            )
+            self._touch_strategy_sql(strategy_id, now)
+            self._conn.commit()
+        return record
+
+    def update_draft(
+        self, draft_id: str, user_id: str, body: StrategyDraftUpdate
+    ) -> StrategyDraftRecord | None:
+        current = self.get_draft_for_user(draft_id, user_id)
+        if current is None:
+            return None
+        now = _now_iso()
+        data = current.model_dump()
+        for key, value in body.model_dump(exclude_unset=True).items():
+            data[key] = value
+        data["updated_at"] = now
+        record = StrategyDraftRecord.model_validate(data)
+        with self._lock:
+            self._conn.execute(
+                "UPDATE strategy_drafts SET draft_json = ?, updated_at = ? "
+                "WHERE id = ? AND user_id = ?",
+                (record.model_dump_json(), now, draft_id, user_id),
+            )
+            self._touch_strategy_sql(record.strategy_id, now)
+            self._conn.commit()
+        return record
+
+    def get_draft_for_user(self, draft_id: str, user_id: str) -> StrategyDraftRecord | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT draft_json FROM strategy_drafts WHERE id = ? AND user_id = ?",
+                (draft_id, user_id),
+            ).fetchone()
+        return StrategyDraftRecord.model_validate_json(cast("str", row[0])) if row else None
+
+    def list_drafts_for_strategy(
+        self, strategy_id: str, user_id: str
+    ) -> list[StrategyDraftRecord]:
+        if self.get_strategy_for_user(strategy_id, user_id) is None:
+            return []
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT draft_json FROM strategy_drafts WHERE strategy_id = ? AND user_id = ? "
+                "ORDER BY created_at DESC",
+                (strategy_id, user_id),
+            ).fetchall()
+        return [StrategyDraftRecord.model_validate_json(cast("str", row[0])) for row in rows]
+
+    def create_version_from_draft(
+        self, draft_id: str, user_id: str
+    ) -> StrategyVersionRecord | None:
+        draft = self.get_draft_for_user(draft_id, user_id)
+        if draft is None:
+            return None
+        now = _now_iso()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT MAX(version_number) FROM strategy_versions "
+                "WHERE strategy_id = ? AND user_id = ?",
+                (draft.strategy_id, user_id),
+            ).fetchone()
+            version_number = int(row[0] or 0) + 1
+            record = StrategyVersionRecord(
+                **draft.model_dump(exclude={"id", "created_at", "updated_at"}),
+                id=uuid.uuid4().hex,
+                draft_id=draft_id,
+                version_number=version_number,
+                frozen_at=now,
+            )
+            self._conn.execute(
+                "INSERT INTO strategy_versions (id, strategy_id, draft_id, user_id, "
+                "version_number, version_json, frozen_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    record.id,
+                    record.strategy_id,
+                    draft_id,
+                    user_id,
+                    version_number,
+                    record.model_dump_json(),
+                    now,
+                ),
+            )
+            self._touch_strategy_sql(record.strategy_id, now)
+            self._conn.commit()
+        return record
+
+    def get_version_for_user(
+        self, version_id: str, user_id: str
+    ) -> StrategyVersionRecord | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT version_json FROM strategy_versions WHERE id = ? AND user_id = ?",
+                (version_id, user_id),
+            ).fetchone()
+        return StrategyVersionRecord.model_validate_json(cast("str", row[0])) if row else None
+
+    def list_versions_for_strategy(
+        self, strategy_id: str, user_id: str
+    ) -> list[StrategyVersionRecord]:
+        if self.get_strategy_for_user(strategy_id, user_id) is None:
+            return []
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT version_json FROM strategy_versions WHERE strategy_id = ? AND user_id = ? "
+                "ORDER BY version_number",
+                (strategy_id, user_id),
+            ).fetchall()
+        return [StrategyVersionRecord.model_validate_json(cast("str", row[0])) for row in rows]
+
+    def list_runs_for_strategy(self, strategy_id: str, user_id: str) -> list[StoredRun]:
+        if self.get_strategy_for_user(strategy_id, user_id) is None:
+            return []
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT id, user_id, state, request_json, progress_json, verdict_json, "
+                "error, note, prompt, created_at, updated_at "
+                "FROM runs WHERE strategy_id = ? AND user_id = ? ORDER BY created_at DESC",
+                (strategy_id, user_id),
             )
             rows = cursor.fetchall()
         return [self._row_to_run(cast("tuple[Any, ...]", row)) for row in rows]
@@ -371,6 +834,20 @@ class SqliteRunStore(RunStore):
             created_at=cast("str", created),
             updated_at=cast("str", updated),
         )
+
+    @staticmethod
+    def _row_to_strategy(row: tuple[Any, ...]) -> StrategyRecord:
+        return StrategyRecord(
+            id=cast("str", row[0]),
+            title=cast("str", row[1]),
+            description=cast("str", row[2]),
+            status=StrategyStatus(cast("str", row[3])),
+            created_at=cast("str", row[4]),
+            updated_at=cast("str", row[5]),
+        )
+
+    def _touch_strategy_sql(self, strategy_id: str, now: str) -> None:
+        self._conn.execute("UPDATE strategies SET updated_at = ? WHERE id = ?", (now, strategy_id))
 
     def close(self) -> None:
         with self._lock:

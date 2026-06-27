@@ -25,6 +25,9 @@ out/
 data/
 artifacts/
 *.parquet
+*.db
+*.sqlite
+*.sqlite3
 
 # OS / editor
 .DS_Store

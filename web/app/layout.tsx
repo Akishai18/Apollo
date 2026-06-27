@@ -1,9 +1,13 @@
 import type { Metadata } from "next";
-import { Space_Grotesk, Inter, JetBrains_Mono } from "next/font/google";
+import {
+  IBM_Plex_Mono,
+  IBM_Plex_Sans,
+  Inter,
+  JetBrains_Mono,
+  Space_Grotesk,
+} from "next/font/google";
 import "./globals.css";
 
-// Display: geometric, a little character. Body: neutral workhorse.
-// Mono: every number, param, and verdict — the instrument texture.
 const display = Space_Grotesk({
   variable: "--ff-display",
   subsets: ["latin"],
@@ -17,6 +21,17 @@ const sans = Inter({
 
 const mono = JetBrains_Mono({
   variable: "--ff-mono",
+  subsets: ["latin"],
+});
+
+const appSans = IBM_Plex_Sans({
+  variable: "--ff-app-sans",
+  subsets: ["latin"],
+  weight: ["400", "500", "600", "700"],
+});
+
+const appMono = IBM_Plex_Mono({
+  variable: "--ff-app-mono",
   subsets: ["latin"],
   weight: ["400", "500", "600"],
 });
@@ -33,7 +48,7 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`${display.variable} ${sans.variable} ${mono.variable} h-full antialiased`}
+      className={`${display.variable} ${sans.variable} ${mono.variable} ${appSans.variable} ${appMono.variable} h-full antialiased`}
     >
       <body className="min-h-full bg-bg text-text-dim font-sans">{children}</body>
     </html>

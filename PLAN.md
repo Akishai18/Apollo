@@ -4,9 +4,15 @@
 > phases land, decisions change, or scope shifts. Per-layer contracts live in
 > each layer's `CLAUDE.md`; this doc is the roadmap, decisions, and status.
 
-**Last updated:** 2026-06-11
-**Current phase:** Phase 4 done + Phase-5 readiness pass done; **Phase 5 (Web) next**
+**Last updated:** 2026-06-25
+**Current phase:** product consolidation + productionization. The trust core,
+API, generator, and local web experience are working; the next product work is
+to turn runs into a coherent strategy lifecycle.
 **Status legend:** `[x]` done · `[~]` in progress · `[ ]` not started
+
+For the refined product model, feature definitions, and target workflow, see
+[`PRODUCT.md`](./PRODUCT.md). This roadmap remains the implementation history
+and technical plan; `PRODUCT.md` is the product source of truth.
 
 ---
 

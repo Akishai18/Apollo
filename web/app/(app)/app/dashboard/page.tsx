@@ -36,16 +36,16 @@ export default function DashboardPage() {
         action={
           <Link
             href="/app"
-            className="accent-gradient focusable inline-flex h-10 items-center gap-2 rounded-full px-4 text-sm font-medium text-accent-ink shadow-lg shadow-accent/25 transition-[filter] hover:brightness-110"
+            className="accent-gradient focusable inline-flex h-8 items-center gap-1.5 rounded px-3 font-mono text-[11px] font-medium uppercase tracking-wider text-accent-ink transition-[filter] hover:brightness-110"
           >
-            <Plus className="h-4 w-4" /> New strategy
+            <Plus className="h-3.5 w-3.5" /> New strategy
           </Link>
         }
       />
 
       {!reachable && !loading && (
-        <FadeUp className="mb-6">
-          <p className="rounded-xl border border-reject/30 bg-reject/[0.06] p-4 font-mono text-xs text-muted">
+        <FadeUp className="mb-2.5">
+          <p className="rounded border border-reject/30 bg-reject/[0.06] p-3 font-mono text-xs text-muted">
             Can&rsquo;t reach the Apollo API — start it with{" "}
             <span className="text-text-dim">uv run uvicorn green.api:app --port 8000</span>.
           </p>
@@ -54,19 +54,17 @@ export default function DashboardPage() {
 
       {/* hero band: pass-rate gauge + stats */}
       <FadeUp delay={0.05}>
-        <div className="panel grid grid-cols-1 gap-6 rounded-2xl p-6 md:grid-cols-[auto_1fr] md:gap-8">
-          <div className="flex items-center gap-5">
+        <div className="panel grid grid-cols-1 gap-3 rounded p-3 md:grid-cols-[auto_1fr]">
+          <div className="flex items-center gap-3">
             <Gauge value={passRate} />
             <div>
-              <div className="font-mono text-[10px] uppercase tracking-wider text-faint">
-                Pass rate
-              </div>
-              <div className="mt-1 max-w-[12rem] text-sm leading-relaxed text-muted">
+              <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-faint">Pass rate</div>
+              <div className="mt-1 max-w-[12rem] text-xs leading-relaxed text-muted">
                 Strategies that survived out-of-sample, of all validated.
               </div>
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 md:border-l md:border-line md:pl-8">
+          <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4 md:border-l md:border-line md:pl-3">
             <Stat label="Validated" value={completed.length} />
             <Stat label="Passed" value={passed.length} tone="pass" />
             <Stat label="Rejected" value={rejected.length} tone="reject" />
@@ -76,15 +74,15 @@ export default function DashboardPage() {
       </FadeUp>
 
       {/* list */}
-      <FadeUp delay={0.1} className="mt-8">
-        <div className="mb-3 flex items-center justify-between gap-3">
-          <h2 className="font-mono text-[10px] uppercase tracking-wider text-faint">Strategies</h2>
+      <FadeUp delay={0.1} className="mt-3">
+        <div className="mb-2 flex items-center justify-between gap-3">
+          <h2 className="font-mono text-[10px] uppercase tracking-[0.18em] text-faint">Strategies</h2>
           <div className="flex gap-1">
             {(["all", "passed", "rejected", "running"] as Filter[]).map((f) => (
               <button
                 key={f}
                 onClick={() => setFilter(f)}
-                className={`focusable rounded-full px-2.5 py-1 font-mono text-[10px] uppercase tracking-wider transition-colors ${
+                className={`focusable rounded border px-2 py-1 font-mono text-[10px] uppercase tracking-wider transition-colors ${
                   filter === f ? "bg-white/[0.08] text-text" : "text-muted hover:text-text"
                 }`}
               >
@@ -103,7 +101,7 @@ export default function DashboardPage() {
             <p className="py-12 text-center font-mono text-xs text-faint">Nothing here.</p>
           )
         ) : (
-          <div className="flex flex-col gap-2.5">
+          <div className="flex flex-col gap-1.5">
             {filtered.map((r, i) => (
               <FadeUp key={r.id} delay={Math.min(0.04 * i, 0.3)}>
                 <RunRow run={r} />
@@ -123,7 +121,7 @@ function Gauge({ value }: { value: number | null }) {
   const pct = value ?? 0;
   const dash = (pct / 100) * c;
   return (
-    <div className="relative h-24 w-24 shrink-0">
+    <div className="relative h-16 w-16 shrink-0">
       <svg viewBox="0 0 80 80" className="h-full w-full -rotate-90">
         <circle cx="40" cy="40" r={r} fill="none" stroke="var(--color-line-strong)" strokeWidth="7" />
         <circle
@@ -145,7 +143,7 @@ function Gauge({ value }: { value: number | null }) {
         </defs>
       </svg>
       <div className="absolute inset-0 flex flex-col items-center justify-center">
-        <span className="nums text-xl font-semibold text-text">{value != null ? `${value}` : "—"}</span>
+        <span className="nums text-base font-semibold text-text">{value != null ? `${value}` : "—"}</span>
         <span className="font-mono text-[9px] text-faint">{value != null ? "percent" : "no data"}</span>
       </div>
     </div>
@@ -170,17 +168,17 @@ function Stat({
           ? "text-accent"
           : "text-text";
   return (
-    <div className="rounded-xl border border-line bg-bg/40 p-3.5">
-      <div className={`nums font-display text-2xl font-semibold ${color}`}>{value}</div>
-      <div className="mt-1 font-mono text-[10px] uppercase tracking-wider text-faint">{label}</div>
+    <div className="rounded border border-line bg-bg/40 p-2.5">
+      <div className={`nums text-lg font-semibold ${color}`}>{value}</div>
+      <div className="mt-1 font-mono text-[10px] uppercase tracking-[0.16em] text-faint">{label}</div>
     </div>
   );
 }
 
 function EmptyState() {
   return (
-    <div className="panel flex flex-col items-center gap-4 rounded-2xl p-12 text-center">
-      <span className="flex h-12 w-12 items-center justify-center rounded-xl bg-accent/10">
+    <div className="panel flex flex-col items-center gap-3 rounded p-8 text-center">
+      <span className="flex h-10 w-10 items-center justify-center rounded bg-accent/10">
         <Sparkles className="h-5 w-5 text-accent" />
       </span>
       <div>
@@ -190,13 +188,13 @@ function EmptyState() {
       <div className="flex gap-2">
         <Link
           href="/app"
-          className="focusable inline-flex items-center gap-1.5 rounded-full bg-accent px-4 py-1.5 text-xs font-medium text-accent-ink transition-colors hover:bg-accent-hi"
+          className="focusable inline-flex items-center gap-1.5 rounded bg-accent px-3 py-1.5 font-mono text-[11px] uppercase tracking-wider text-accent-ink transition-colors hover:bg-accent-hi"
         >
           <Plus className="h-3.5 w-3.5" /> Describe a strategy
         </Link>
         <Link
           href="/app/backtest"
-          className="focusable inline-flex items-center gap-1.5 rounded-full border border-line-strong px-4 py-1.5 text-xs text-text-dim transition-colors hover:bg-white/[0.06] hover:text-text"
+          className="focusable inline-flex items-center gap-1.5 rounded border border-line-strong px-3 py-1.5 font-mono text-[11px] uppercase tracking-wider text-text-dim transition-colors hover:bg-white/[0.06] hover:text-text"
         >
           <FlaskConical className="h-3.5 w-3.5" /> Open the Lab
         </Link>

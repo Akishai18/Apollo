@@ -10,6 +10,7 @@ scoped to the owner — a cross-user fetch is indistinguishable from "not found"
 Endpoints:
   GET  /healthz          liveness
   POST /runs             submit a strategy + config → {id, state}
+  POST /runs/{id}/validate
   GET  /runs             list the caller's runs
   GET  /runs/{id}        state, progress, and verdict when done (owner only)
   WS   /runs/{id}/ws     live snapshots: queued → per-window progress → verdict
@@ -23,7 +24,21 @@ from fastapi.responses import JSONResponse
 
 from green.api.auth import AuthError, verify_supabase_jwt
 from green.api.jobs import JobRunner
-from green.api.models import GenerateRequest, RunRequest, RunResponse, RunSummary
+from green.api.models import (
+    GenerateRequest,
+    RunKind,
+    RunRequest,
+    RunResponse,
+    RunSummary,
+    StrategyCreate,
+    StrategyDetail,
+    StrategyDraftCreate,
+    StrategyDraftRecord,
+    StrategyDraftUpdate,
+    StrategyRecord,
+    StrategySummary,
+    StrategyVersionRecord,
+)
 from green.api.settings import Settings
 from green.api.store import build_store
 from green.api.templates import templates_payload
@@ -65,6 +80,126 @@ def list_templates() -> list[dict[str, object]]:
     return templates_payload()
 
 
+@router.post("/strategies", response_model=StrategyRecord, status_code=201)
+def create_strategy(
+    request: Request, body: StrategyCreate, authorization: str | None = Header(default=None)
+) -> StrategyRecord | JSONResponse:
+    try:
+        user_id = _resolve_user(_settings(request), authorization)
+    except AuthError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=401)
+    return _runner(request).create_strategy(user_id, body)
+
+
+@router.get("/strategies", response_model=list[StrategySummary])
+def list_strategies(
+    request: Request, authorization: str | None = Header(default=None)
+) -> list[StrategySummary] | JSONResponse:
+    try:
+        user_id = _resolve_user(_settings(request), authorization)
+    except AuthError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=401)
+    return _runner(request).list_strategies_for_user(user_id)
+
+
+@router.get("/strategies/{strategy_id}", response_model=StrategyDetail)
+def get_strategy(
+    request: Request, strategy_id: str, authorization: str | None = Header(default=None)
+) -> StrategyDetail | JSONResponse:
+    try:
+        user_id = _resolve_user(_settings(request), authorization)
+    except AuthError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=401)
+    detail = _runner(request).get_strategy_detail(user_id, strategy_id)
+    if detail is None:
+        return JSONResponse({"detail": "strategy not found"}, status_code=404)
+    return detail
+
+
+@router.post(
+    "/strategies/{strategy_id}/drafts",
+    response_model=StrategyDraftRecord,
+    status_code=201,
+)
+def create_draft(
+    request: Request,
+    strategy_id: str,
+    body: StrategyDraftCreate,
+    authorization: str | None = Header(default=None),
+) -> StrategyDraftRecord | JSONResponse:
+    try:
+        user_id = _resolve_user(_settings(request), authorization)
+    except AuthError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=401)
+    draft = _runner(request).create_draft(user_id, strategy_id, body)
+    if draft is None:
+        return JSONResponse({"detail": "strategy not found"}, status_code=404)
+    return draft
+
+
+@router.patch("/drafts/{draft_id}", response_model=StrategyDraftRecord)
+def update_draft(
+    request: Request,
+    draft_id: str,
+    body: StrategyDraftUpdate,
+    authorization: str | None = Header(default=None),
+) -> StrategyDraftRecord | JSONResponse:
+    try:
+        user_id = _resolve_user(_settings(request), authorization)
+    except AuthError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=401)
+    draft = _runner(request).update_draft(user_id, draft_id, body)
+    if draft is None:
+        return JSONResponse({"detail": "draft not found"}, status_code=404)
+    return draft
+
+
+@router.post("/drafts/{draft_id}/versions", response_model=StrategyVersionRecord, status_code=201)
+def create_version(
+    request: Request, draft_id: str, authorization: str | None = Header(default=None)
+) -> StrategyVersionRecord | JSONResponse:
+    try:
+        user_id = _resolve_user(_settings(request), authorization)
+    except AuthError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=401)
+    version = _runner(request).create_version_from_draft(user_id, draft_id)
+    if version is None:
+        return JSONResponse({"detail": "draft not found"}, status_code=404)
+    return version
+
+
+@router.post("/versions/{version_id}/backtest", response_model=RunResponse, status_code=202)
+async def backtest_version(
+    request: Request, version_id: str, authorization: str | None = Header(default=None)
+) -> RunResponse | JSONResponse:
+    try:
+        user_id = _resolve_user(_settings(request), authorization)
+    except AuthError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=401)
+    run_id = _runner(request).submit_version(user_id, version_id, RunKind.BACKTEST)
+    if run_id is None:
+        return JSONResponse({"detail": "version not found"}, status_code=404)
+    snapshot = _runner(request).get(run_id, user_id)
+    assert snapshot is not None
+    return snapshot
+
+
+@router.post("/versions/{version_id}/validate", response_model=RunResponse, status_code=202)
+async def validate_version(
+    request: Request, version_id: str, authorization: str | None = Header(default=None)
+) -> RunResponse | JSONResponse:
+    try:
+        user_id = _resolve_user(_settings(request), authorization)
+    except AuthError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=401)
+    run_id = _runner(request).submit_version(user_id, version_id, RunKind.VALIDATION)
+    if run_id is None:
+        return JSONResponse({"detail": "version not found"}, status_code=404)
+    snapshot = _runner(request).get(run_id, user_id)
+    assert snapshot is not None
+    return snapshot
+
+
 @router.post("/runs", response_model=RunResponse, status_code=202)
 async def submit_run(
     request: Request, body: RunRequest, authorization: str | None = Header(default=None)
@@ -97,6 +232,24 @@ async def submit_generation(
     run_id = runner.submit_generation(user_id, body.prompt, body.tier)
     snapshot = runner.get(run_id, user_id)
     assert snapshot is not None  # just created
+    return snapshot
+
+
+@router.post("/runs/{run_id}/validate", response_model=RunResponse, status_code=202)
+async def validate_existing_run(
+    request: Request, run_id: str, authorization: str | None = Header(default=None)
+) -> RunResponse | JSONResponse:
+    """Clone an owned run's request as a formal validation run."""
+    try:
+        user_id = _resolve_user(_settings(request), authorization)
+    except AuthError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=401)
+    runner = _runner(request)
+    new_id = runner.submit_validation_from_run(user_id, run_id)
+    if new_id is None:
+        return JSONResponse({"detail": "run not found"}, status_code=404)
+    snapshot = runner.get(new_id, user_id)
+    assert snapshot is not None
     return snapshot
 
 

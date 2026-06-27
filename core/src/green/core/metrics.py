@@ -34,6 +34,11 @@ class Metrics(BaseModel):
     num_fills: int
     num_trades: int  # completed round trips
     win_rate: float  # fraction of round trips with pnl > 0 (0.0 if none)
+    # gross wins / gross losses; capped when there are wins and no losses so
+    # persisted JSON never round-trips a non-finite float as null.
+    profit_factor: float
+    cagr: float  # compound annual growth rate from the equity curve length
+    max_dd_bars: int  # bars spent in the worst drawdown trough (0 if flat)
 
 
 def compute_metrics(
@@ -55,13 +60,37 @@ def compute_metrics(
 
     peak = float("-inf")
     max_drawdown = 0.0
-    for equity in equities:
-        peak = max(peak, equity)
+    max_dd_bars = 0
+    peak_t = 0
+    for t, equity in enumerate(equities):
+        if equity >= peak:
+            peak = equity
+            peak_t = t
         if peak > 0.0:
-            max_drawdown = max(max_drawdown, (peak - equity) / peak)
+            dd = (peak - equity) / peak
+            if dd > max_drawdown + 1e-12:
+                max_drawdown = dd
+                max_dd_bars = t - peak_t
+            elif abs(dd - max_drawdown) < 1e-12:
+                max_dd_bars = max(max_dd_bars, t - peak_t)
 
     trades = pair_trades(fills)
     wins = sum(1 for trade in trades if trade.pnl > 0.0)
+    gross_wins = sum(trade.pnl for trade in trades if trade.pnl > 0.0)
+    gross_losses = abs(sum(trade.pnl for trade in trades if trade.pnl < 0.0))
+    if gross_losses > 0.0:
+        profit_factor = gross_wins / gross_losses
+    elif gross_wins > 0.0:
+        profit_factor = 999.0
+    else:
+        profit_factor = 0.0
+
+    n_bars = max(len(equities) - 1, 0)
+    years = n_bars / periods_per_year if periods_per_year > 0.0 else 0.0
+    if years > 0.0 and starting_cash > 0.0 and final_equity > 0.0:
+        cagr = (final_equity / starting_cash) ** (1.0 / years) - 1.0
+    else:
+        cagr = 0.0
 
     return Metrics(
         total_return=final_equity / starting_cash - 1.0,
@@ -71,4 +100,7 @@ def compute_metrics(
         num_fills=len(fills),
         num_trades=len(trades),
         win_rate=wins / len(trades) if trades else 0.0,
+        profit_factor=profit_factor,
+        cagr=cagr,
+        max_dd_bars=max_dd_bars,
     )

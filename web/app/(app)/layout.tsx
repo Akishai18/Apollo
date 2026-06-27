@@ -7,7 +7,9 @@ import { RunsProvider } from "@/lib/runs-context";
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   return (
     <RunsProvider>
-      <AppShell>{children}</AppShell>
+      <div className="app-terminal">
+        <AppShell>{children}</AppShell>
+      </div>
     </RunsProvider>
   );
 }

@@ -18,9 +18,9 @@ export function EvidencePanel({
 }) {
   if (!report) {
     return (
-      <div className="flex h-full flex-col items-center justify-center px-8">
+      <div className="flex h-full flex-col items-center justify-center px-4">
         <div
-          className="mb-6 h-44 w-full rounded-xl border border-dashed border-line-strong"
+          className="mb-4 h-36 w-full rounded border border-dashed border-line-strong"
           style={{
             backgroundImage:
               "repeating-linear-gradient(45deg, var(--color-line) 0, var(--color-line) 1px, transparent 1px, transparent 11px)",
@@ -30,7 +30,7 @@ export function EvidencePanel({
         <p className="max-w-[16rem] text-center font-mono text-[11px] leading-relaxed text-faint">
           {busy
             ? "Running the gate — evidence will appear here the moment it lands."
-            : "Run a validation and the out-of-sample evidence appears here — equity curve, metrics, walk-forward windows and integrity checks."}
+            : "Run a preview or validation and the out-of-sample evidence appears here — equity curve, metrics, walk-forward windows and integrity checks."}
         </p>
       </div>
     );
@@ -40,7 +40,7 @@ export function EvidencePanel({
   const m = report.metrics;
 
   return (
-    <div className="scroll-thin flex h-full flex-col gap-6 overflow-y-auto p-5">
+    <div className="scroll-thin flex h-full flex-col gap-3 overflow-y-auto p-3">
       {/* verdict */}
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
@@ -51,13 +51,13 @@ export function EvidencePanel({
       </div>
 
       <Section label="Equity · in-sample → held-out">
-        <div className="rounded-xl border border-line bg-bg-soft/40 p-3">
+        <div className="rounded border border-line bg-bg-soft/40 p-2">
           <EquityReport values={report.equity} splitFrac={report.splitFrac} tone={tone} id="ev-eq" />
         </div>
       </Section>
 
       <Section label="Metrics">
-        <div className="grid grid-cols-2 gap-2.5">
+        <div className="grid grid-cols-2 gap-1.5">
           <MetricTile label="Held-out Sharpe" value={m.sharpeTest} tone={tone} hint={`train ${m.sharpeTrain}`} />
           <MetricTile label="Retention" value={m.retention} tone={tone} hint="of train" />
           <MetricTile label="OOS return" value={m.oosReturn} tone={tone} />
@@ -68,13 +68,13 @@ export function EvidencePanel({
       </Section>
 
       <Section label="Walk-forward windows">
-        <div className="rounded-xl border border-line bg-bg-soft/40 p-4">
+        <div className="rounded border border-line bg-bg-soft/40 p-2">
           <WindowBars windows={report.windowBars} tone={tone} />
         </div>
       </Section>
 
       <Section label="Parameter sweep · train Sharpe">
-        <div className="rounded-xl border border-line bg-bg-soft/40 p-4">
+        <div className="rounded border border-line bg-bg-soft/40 p-2">
           <SweepHeatmap sweep={report.sweep} />
         </div>
       </Section>

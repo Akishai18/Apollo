@@ -37,7 +37,7 @@ export function StateBadge({ run }: { run: RunSummary }) {
   const { tone, ring, label } = look(run);
   return (
     <span
-      className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 font-mono text-[10px] uppercase tracking-wider ${ring} ${tone}`}
+      className={`inline-flex items-center gap-1.5 rounded border border-line px-2 py-1 font-mono text-[10px] uppercase tracking-wider ${ring} ${tone}`}
     >
       {ACTIVE.includes(run.state) && <Loader2 className="h-2.5 w-2.5 animate-spin" />}
       {label}
@@ -52,9 +52,9 @@ export function RunRow({ run }: { run: RunSummary }) {
   return (
     <Link
       href={`/app/runs/${run.id}`}
-      className="panel panel-hover group flex items-center gap-4 rounded-xl p-4"
+      className="panel panel-hover group flex items-center gap-3 rounded px-3 py-2.5"
     >
-      <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${ring}`}>
+      <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded ${ring}`}>
         {active ? (
           <Loader2 className={`h-4 w-4 ${tone} animate-spin`} />
         ) : run.state === "completed" || run.state === "error" ? (

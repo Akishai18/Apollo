@@ -31,9 +31,11 @@ from green.core.adapter import EnvironmentAdapter
 from green.core.dataset import Dataset
 from green.core.engine import DEFAULT_STARTING_CASH, run
 from green.core.metrics import Metrics, compute_metrics
+from green.core.models import Side
 from green.core.overfit.sweep import expand_grid
 from green.core.overfit.windows import Window, make_windows
 from green.core.strategy import Strategy
+from green.core.trades import Trade, pair_trades
 
 type SelectBy = Literal["sharpe", "total_return"]
 type StrategyFactory = Callable[[dict[str, Any]], Strategy]
@@ -42,6 +44,19 @@ type StrategyFactory = Callable[[dict[str, Any]], Strategy]
 # within the train/test slice) — offset by window.train_start / window.test_start
 # for an absolute axis.
 type EquityCurve = tuple[tuple[int, float], ...]
+
+
+class TradeRecord(BaseModel):
+    """A completed round trip from a held-out window — legible trade log for the UI."""
+
+    model_config = ConfigDict(frozen=True)
+
+    symbol: str
+    side: Literal["LONG", "SHORT"]
+    entry_t: int  # window-local bar index
+    exit_t: int
+    bars: int
+    pnl_pct: float  # realized return on entry notional
 
 
 class SweepPoint(BaseModel):
@@ -63,6 +78,10 @@ class WindowResult(BaseModel):
     # in-sample looks good, held-out is the honest test. The visuals draw these.
     train_equity: EquityCurve = ()
     test_equity: EquityCurve = ()
+    # Buy-and-hold on the primary symbol over the held-out slice — the benchmark line.
+    benchmark_equity: EquityCurve = ()
+    # Recent round trips from the held-out run (newest last, capped).
+    test_trades: tuple[TradeRecord, ...] = ()
 
 
 class Verdict(BaseModel):
@@ -93,6 +112,42 @@ type ProgressHook = Callable[[WalkForwardProgress], None]
 
 def _score(metrics: Metrics, select_by: SelectBy) -> float:
     return metrics.sharpe if select_by == "sharpe" else metrics.total_return
+
+
+def _trade_records(trades: list[Trade], *, limit: int = 5) -> tuple[TradeRecord, ...]:
+    recent = trades[-limit:] if len(trades) > limit else trades
+    out: list[TradeRecord] = []
+    for trade in recent:
+        notional = trade.entry_price * trade.quantity
+        pnl_pct = trade.pnl / notional if notional > 0.0 else 0.0
+        out.append(
+            TradeRecord(
+                symbol=trade.symbol,
+                side="LONG" if trade.direction is Side.BUY else "SHORT",
+                entry_t=trade.entry_t,
+                exit_t=trade.exit_t,
+                bars=max(trade.exit_t - trade.entry_t, 1),
+                pnl_pct=pnl_pct,
+            )
+        )
+    return tuple(out)
+
+
+def _benchmark_equity(
+    test_data: Dataset,
+    *,
+    starting_cash: float,
+) -> EquityCurve:
+    """All-in buy-and-hold on the first symbol over the held-out slice."""
+    symbols = test_data.symbols
+    if not symbols:
+        return ()
+    symbol = symbols[0]
+    p0 = test_data.price(symbol, 0)
+    if p0 <= 0.0:
+        return ()
+    qty = starting_cash / p0
+    return tuple((t, qty * test_data.price(symbol, t)) for t in test_data.timeline)
 
 
 def run_walk_forward(
@@ -147,6 +202,7 @@ def run_walk_forward(
         held_out = run(
             strategy_factory(dict(best.params)), adapter, test_data, starting_cash=starting_cash
         )
+        held_trades = pair_trades(held_out.fills)
         window_result = WindowResult(
             window=window,
             chosen_params=best.params,
@@ -160,6 +216,8 @@ def run_walk_forward(
             sweep=tuple(sweep),
             train_equity=best_train_equity,
             test_equity=tuple(held_out.equity_curve),
+            benchmark_equity=_benchmark_equity(test_data, starting_cash=starting_cash),
+            test_trades=_trade_records(held_trades),
         )
         results.append(window_result)
         if progress is not None:

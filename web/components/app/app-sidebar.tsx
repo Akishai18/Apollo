@@ -9,6 +9,8 @@ import {
   LayoutGrid,
   Clock,
   FlaskConical,
+  ScanLine,
+  ShieldCheck,
   ChevronsLeft,
   ChevronsRight,
 } from "lucide-react";
@@ -24,6 +26,8 @@ const NAV = [
   { href: "/app/dashboard", label: "Dashboard", icon: LayoutGrid, match: (p: string) => p.startsWith("/app/dashboard") },
   { href: "/app/strategies", label: "Strategies", icon: Clock, match: (p: string) => p.startsWith("/app/strategies") || p.startsWith("/app/runs") },
   { href: "/app/backtest", label: "Backtester", icon: FlaskConical, match: (p: string) => p.startsWith("/app/backtest") },
+  { href: "/app/visualizer", label: "Visualizer", icon: ScanLine, match: (p: string) => p.startsWith("/app/visualizer") },
+  { href: "/app/validation", label: "Validation", icon: ShieldCheck, match: (p: string) => p.startsWith("/app/validation") },
 ] as const;
 
 export function AppSidebar({ onNavigate }: { onNavigate?: () => void }) {
@@ -33,19 +37,19 @@ export function AppSidebar({ onNavigate }: { onNavigate?: () => void }) {
 
   return (
     <aside
-      className={`flex h-screen shrink-0 flex-col border-r border-line bg-bg-soft/50 py-4 transition-[width] duration-200 ease-out ${
-        expanded ? "w-56 px-3" : "w-16 items-center px-0"
+      className={`flex h-screen shrink-0 flex-col border-r border-line bg-bg py-3 transition-[width] duration-200 ease-out ${
+        expanded ? "w-52 px-2" : "w-12 items-center px-0"
       }`}
     >
       {/* brand */}
       <Link
         href="/"
-        className={`focusable mb-3 flex h-9 items-center rounded-lg ${expanded ? "gap-2 px-1" : "justify-center"}`}
+        className={`focusable mb-3 flex h-8 items-center rounded ${expanded ? "gap-2 px-1" : "justify-center"}`}
         aria-label="Apollo home"
       >
-        <ApolloMark className="h-7 w-7 shrink-0" />
+        <ApolloMark className="h-6 w-6 shrink-0" />
         {expanded && (
-          <span className="font-display text-lg font-semibold tracking-[-0.02em] text-text">
+          <span className="font-mono text-sm font-semibold uppercase tracking-[0.16em] text-text">
             Apollo
           </span>
         )}
@@ -56,16 +60,16 @@ export function AppSidebar({ onNavigate }: { onNavigate?: () => void }) {
         href="/app"
         onClick={onNavigate}
         aria-label="New strategy"
-        className={`group accent-gradient focusable relative flex items-center rounded-xl text-accent-ink shadow-lg shadow-accent/20 transition-[filter] hover:brightness-110 ${
-          expanded ? "h-10 gap-2.5 px-3" : "mx-auto h-10 w-10 justify-center"
+        className={`group accent-gradient focusable relative flex items-center rounded text-accent-ink transition-[filter] hover:brightness-110 ${
+          expanded ? "h-8 gap-2 px-2" : "mx-auto h-8 w-8 justify-center"
         }`}
       >
-        <Plus className="h-[18px] w-[18px] shrink-0" />
-        {expanded && <span className="text-sm font-medium">New strategy</span>}
+        <Plus className="h-4 w-4 shrink-0" />
+        {expanded && <span className="font-mono text-[11px] uppercase tracking-wider">New strategy</span>}
         {!expanded && <Tooltip label="New strategy" />}
       </Link>
 
-      <div className={`my-3 h-px bg-line ${expanded ? "w-full" : "w-7"}`} />
+      <div className={`my-3 h-px bg-line ${expanded ? "w-full" : "w-8"}`} />
 
       {/* nav */}
       <nav className={`flex flex-col gap-1 ${expanded ? "" : "items-center"}`} aria-label="Primary">
@@ -87,12 +91,12 @@ export function AppSidebar({ onNavigate }: { onNavigate?: () => void }) {
       <button
         onClick={() => setExpanded((v) => !v)}
         aria-label={expanded ? "Collapse sidebar" : "Expand sidebar"}
-        className={`group relative mt-auto flex items-center rounded-xl text-muted transition-colors hover:bg-white/[0.05] hover:text-text ${
-          expanded ? "h-9 gap-3 px-3" : "mx-auto h-10 w-10 justify-center"
+        className={`group relative mt-auto flex items-center rounded text-muted transition-colors hover:bg-white/[0.05] hover:text-text ${
+          expanded ? "h-8 gap-2 px-2" : "mx-auto h-8 w-8 justify-center"
         }`}
       >
-        {expanded ? <ChevronsLeft className="h-[18px] w-[18px]" /> : <ChevronsRight className="h-[18px] w-[18px]" />}
-        {expanded && <span className="text-sm">Collapse</span>}
+        {expanded ? <ChevronsLeft className="h-4 w-4" /> : <ChevronsRight className="h-4 w-4" />}
+        {expanded && <span className="font-mono text-[11px] uppercase tracking-wider">Collapse</span>}
         {!expanded && <Tooltip label="Expand" />}
       </button>
 
@@ -101,12 +105,12 @@ export function AppSidebar({ onNavigate }: { onNavigate?: () => void }) {
         href="/app/settings"
         onClick={onNavigate}
         aria-label="Account & settings"
-        className={`group relative mt-1 flex items-center rounded-xl transition-colors ${
-          expanded ? "gap-2.5 px-2 py-1.5 hover:bg-white/[0.04]" : "mx-auto justify-center"
-        } ${!expanded ? "h-10 w-10" : ""}`}
+        className={`group relative mt-1 flex items-center rounded transition-colors ${
+          expanded ? "gap-2 px-1 py-1 hover:bg-white/[0.04]" : "mx-auto justify-center"
+        } ${!expanded ? "h-8 w-8" : ""}`}
       >
         <span
-          className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full font-mono text-xs accent-gradient text-accent-ink ${
+          className={`flex h-8 w-8 shrink-0 items-center justify-center rounded font-mono text-xs accent-gradient text-accent-ink ${
             onSettings ? "ring-2 ring-accent/40" : ""
           }`}
         >
@@ -114,7 +118,7 @@ export function AppSidebar({ onNavigate }: { onNavigate?: () => void }) {
         </span>
         {expanded ? (
           <span className="min-w-0 leading-tight">
-            <span className="block truncate text-sm text-text">Akishai</span>
+            <span className="block truncate text-xs text-text">Akishai</span>
             <span className="block font-mono text-[10px] text-faint">Apollo Spark · Free</span>
           </span>
         ) : (
@@ -145,16 +149,16 @@ function RailButton({
       href={href}
       onClick={onNavigate}
       aria-label={label}
-      className={`group relative flex items-center rounded-xl transition-colors ${
-        expanded ? "h-10 gap-3 px-3" : "h-10 w-10 justify-center"
+      className={`group relative flex items-center rounded transition-colors ${
+        expanded ? "h-8 gap-2 px-2" : "h-8 w-8 justify-center"
       } ${
         active
-          ? "bg-accent/15 text-accent ring-1 ring-inset ring-accent/30"
+          ? "bg-accent/12 text-accent ring-1 ring-inset ring-accent/35"
           : "text-muted hover:bg-white/[0.05] hover:text-text"
       }`}
     >
       {children}
-      {expanded && <span className="text-sm">{label}</span>}
+      {expanded && <span className="font-mono text-[11px] uppercase tracking-wider">{label}</span>}
       {!expanded && <Tooltip label={label} />}
     </Link>
   );
@@ -162,7 +166,7 @@ function RailButton({
 
 function Tooltip({ label }: { label: string }) {
   return (
-    <span className="pointer-events-none absolute left-full z-50 ml-3 hidden whitespace-nowrap rounded-md border border-line-strong bg-elevated px-2 py-1 font-mono text-[10px] text-text-dim opacity-0 shadow-lg transition-opacity duration-150 group-hover:opacity-100 md:block">
+    <span className="pointer-events-none absolute left-full z-50 ml-2 hidden whitespace-nowrap rounded border border-line-strong bg-elevated px-2 py-1 font-mono text-[10px] text-text-dim opacity-0 transition-opacity duration-150 group-hover:opacity-100 md:block">
       {label}
     </span>
   );

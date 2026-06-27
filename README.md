@@ -34,6 +34,9 @@ environment adapters. Historical market data is the first faithful environment.
 Each layer has its own `CLAUDE.md` describing the contract and invariants that
 edits to that layer must respect.
 
+The product model and target workflow live in [`PRODUCT.md`](./PRODUCT.md):
+Builder -> Backtest -> Visualizer -> Validation -> Report.
+
 ## Stack
 
 Python 3.12+ (uv workspace, ruff, pyright, pytest + Hypothesis, pydantic v2,

@@ -65,6 +65,12 @@ def _get(client: httpx.Client, path: str, token: str | None = None) -> httpx.Res
     return client.get(path, headers=_headers(token))
 
 
+def _patch(
+    client: httpx.Client, path: str, payload: dict[str, Any], token: str | None = None
+) -> httpx.Response:
+    return client.patch(path, json=payload, headers=_headers(token))
+
+
 def _get_raw(client: httpx.Client, path: str, headers: dict[str, str]) -> httpx.Response:
     return client.get(path, headers=headers)
 
@@ -108,6 +114,7 @@ def test_submit_runs_the_gate_sandboxed_and_returns_a_verdict(client: TestClient
     body = _json(submit)
     run_id = cast("str", body["id"])
     assert body["state"] == "queued"
+    assert body["run_kind"] == "backtest"
 
     final = _wait_for_terminal(client, run_id)
     assert final["state"] == "completed"
@@ -120,6 +127,79 @@ def test_submit_runs_the_gate_sandboxed_and_returns_a_verdict(client: TestClient
     window = verdict["windows"][0]
     assert len(window["train_equity"]) == 60
     assert len(window["test_equity"]) == 30
+
+
+def test_strategy_draft_version_and_version_runs(client: TestClient) -> None:
+    strategy = _json(
+        _post(client, "/strategies", {"title": "SYN mean reversion", "description": "toy lab"})
+    )
+    strategy_id = cast("str", strategy["id"])
+
+    draft_body = {
+        "prompt": "mean reversion on SYN",
+        "source": MEAN_REVERSION_SOURCE,
+        "class_name": "MeanReversion",
+        "grid": {"symbol": ["SYN"], "lookback": [10], "quantity": [10]},
+        "adapter": {"name": "toy", "params": {"n_steps": 90, "mu": 100.0, "seed": 7}},
+        "train_size": 40,
+        "test_size": 25,
+    }
+    draft = _json(_post(client, f"/strategies/{strategy_id}/drafts", draft_body))
+    assert draft["strategy_id"] == strategy_id
+
+    patched = _json(_patch(client, f"/drafts/{draft['id']}", {"assumptions": ["toy OU data"]}))
+    assert patched["assumptions"] == ["toy OU data"]
+
+    version = _json(_post(client, f"/drafts/{draft['id']}/versions", {}))
+    version_id = cast("str", version["id"])
+    assert version["version_number"] == 1
+
+    submitted = _json(_post(client, f"/versions/{version_id}/backtest", {}))
+    run_id = cast("str", submitted["id"])
+    assert submitted["run_kind"] == "backtest"
+    assert submitted["strategy_id"] == strategy_id
+    assert submitted["strategy_version_id"] == version_id
+
+    final = _wait_for_terminal(client, run_id)
+    assert final["state"] == "completed"
+    assert final["strategy_id"] == strategy_id
+    assert final["strategy_version_id"] == version_id
+
+    validation = _json(_post(client, f"/versions/{version_id}/validate", {}))
+    assert validation["run_kind"] == "validation"
+    assert validation["strategy_id"] == strategy_id
+
+    detail = _json(_get(client, f"/strategies/{strategy_id}"))
+    assert detail["strategy"]["title"] == "SYN mean reversion"
+    assert len(detail["drafts"]) == 1
+    assert len(detail["versions"]) == 1
+    assert any(r["id"] == run_id for r in detail["runs"])
+
+    rows = _json_list(_get(client, "/strategies"))
+    row = next(r for r in rows if r["id"] == strategy_id)
+    assert row["versions_count"] == 1
+    assert row["runs_count"] >= 2
+    assert row["latest_run"]["strategy_id"] == strategy_id
+
+
+def test_completed_backtest_can_be_promoted_to_validation(client: TestClient) -> None:
+    run_id = cast("str", _json(_post(client, "/runs", _BASE_REQUEST))["id"])
+    _wait_for_terminal(client, run_id)
+
+    promoted = _json(_post(client, f"/runs/{run_id}/validate", {}))
+    validation_id = cast("str", promoted["id"])
+    assert promoted["run_kind"] == "validation"
+    assert validation_id != run_id
+
+    final = _wait_for_terminal(client, validation_id)
+    assert final["state"] == "completed"
+    assert final["run_kind"] == "validation"
+    assert final["source"] == MEAN_REVERSION_SOURCE
+
+    rows = _json_list(_get(client, "/runs"))
+    by_id = {r["id"]: r for r in rows}
+    assert by_id[run_id]["run_kind"] == "backtest"
+    assert by_id[validation_id]["run_kind"] == "validation"
 
 
 def test_list_returns_lean_summaries_not_full_verdicts(client: TestClient) -> None:
@@ -219,6 +299,59 @@ def test_generate_persists_prompt_and_generated_source(client: TestClient) -> No
     rows = _json_list(_get(client, "/runs"))
     row = next(r for r in rows if r["id"] == run_id)
     assert row["title"] == prompt[:47] + "…"  # truncated prompt as the list label
+
+
+def test_generated_preview_creates_strategy_and_promotes_to_formal_validation(
+    client: TestClient,
+) -> None:
+    prompt = "mean reversion on SYN, buy below the rolling average and exit at the mean"
+    submit = _post(client, "/generate", {"prompt": prompt, "tier": "free"})
+    run_id = cast("str", _json(submit)["id"])
+
+    preview = _wait_for_terminal(client, run_id)
+    strategy_id = cast("str", preview["strategy_id"])
+    version_id = cast("str", preview["strategy_version_id"])
+    assert preview["state"] == "completed"
+    assert preview["run_kind"] == "backtest"
+    assert preview["train_size"] == 80
+    assert preview["test_size"] == 50
+    assert preview["progress"] == {"completed": 2, "total": 2}
+    assert strategy_id
+    assert version_id
+
+    detail = _json(_get(client, f"/strategies/{strategy_id}"))
+    assert detail["strategy"]["title"] == prompt
+    assert len(detail["drafts"]) == 1
+    assert len(detail["versions"]) == 1
+    draft = detail["drafts"][0]
+    assert draft["prompt"] == prompt
+    # The preview run caps the grid for speed; the saved draft/version keeps the
+    # full generated grid so formal validation can do real parameter selection.
+    assert draft["grid"]["lookback"] == [10, 20]
+    assert draft["grid"]["entry_z"] == [-1.5, -1.0]
+
+    promoted = _json(_post(client, f"/runs/{run_id}/validate", {}))
+    validation_id = cast("str", promoted["id"])
+    assert promoted["run_kind"] == "validation"
+    assert promoted["strategy_id"] == strategy_id
+    assert promoted["strategy_version_id"] == version_id
+    assert promoted["train_size"] == 200
+    assert promoted["test_size"] == 100
+
+    validation = _wait_for_terminal(client, validation_id)
+    assert validation["state"] == "completed"
+    assert validation["run_kind"] == "validation"
+    assert validation["train_size"] == 200
+    assert validation["test_size"] == 100
+    assert validation["strategy_id"] == strategy_id
+    assert validation["strategy_version_id"] == version_id
+    assert validation["prompt"] == prompt
+    assert len(validation["verdict"]["windows"]) == 4
+
+    rows = _json_list(_get(client, "/strategies"))
+    row = next(r for r in rows if r["id"] == strategy_id)
+    assert row["latest_validation"]["id"] == validation_id
+    assert row["runs_count"] == 2
 
 
 def test_generate_rejects_empty_prompt(client: TestClient) -> None:

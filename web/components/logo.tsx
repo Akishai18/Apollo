@@ -10,7 +10,6 @@ export function ApolloMark({ className = "h-7 w-7" }: { className?: string }) {
       viewBox="0 0 24 24"
       fill="none"
       className={className}
-      style={{ filter: "drop-shadow(0 0 6px rgba(95,110,255,0.35))" }}
       aria-hidden="true"
     >
       <defs>

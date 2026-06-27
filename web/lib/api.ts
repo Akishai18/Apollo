@@ -7,6 +7,7 @@
 
 export const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const WS_BASE = API_BASE.replace(/^http/, "ws");
+const ENABLE_WS_STREAM = process.env.NEXT_PUBLIC_ENABLE_WS === "1";
 
 // --- API shapes (snake_case, as the backend serialises) --------------------
 
@@ -18,6 +19,18 @@ export type ApiMetrics = {
   num_fills: number;
   num_trades: number;
   win_rate: number;
+  profit_factor: number;
+  cagr: number;
+  max_dd_bars: number;
+};
+
+export type ApiTradeRecord = {
+  symbol: string;
+  side: "LONG" | "SHORT";
+  entry_t: number;
+  exit_t: number;
+  bars: number;
+  pnl_pct: number;
 };
 
 export type ApiSweepPoint = { params: Record<string, unknown>; train: ApiMetrics };
@@ -30,6 +43,8 @@ export type ApiWindow = {
   sweep: ApiSweepPoint[];
   train_equity: [number, number][];
   test_equity: [number, number][];
+  benchmark_equity: [number, number][];
+  test_trades: ApiTradeRecord[];
 };
 
 export type ApiVerdict = {
@@ -43,6 +58,7 @@ export type ApiVerdict = {
 };
 
 export type RunState = "queued" | "generating" | "running" | "completed" | "error";
+export type RunKind = "backtest" | "validation";
 
 export type RunSnapshot = {
   id: string;
@@ -53,6 +69,12 @@ export type RunSnapshot = {
   note: string | null; // the generator's rationale (natural-language runs)
   prompt: string | null; // the original NL prompt (natural-language runs)
   source: string | null; // the strategy source that ran (detail view)
+  symbol: string | null; // primary traded symbol (from the grid)
+  kind: string | null; // strategy family, derived from the class name
+  run_kind: RunKind;
+  train_size: number | null;
+  test_size: number | null;
+  adapter: string | null;
 };
 
 // Lean row for lists/sidebar (GET /runs) — no full verdict, but enough verdict
@@ -63,6 +85,7 @@ export type RunSummary = {
   title: string | null;
   symbol: string | null;
   kind: string | null;
+  run_kind: RunKind;
   passed: boolean | null;
   reason: string | null;
   oos_sharpe: number | null;
@@ -73,6 +96,56 @@ export type RunSummary = {
   error: string | null;
   created_at: string;
   updated_at: string;
+};
+
+export type StrategyRecord = {
+  id: string;
+  title: string;
+  description: string;
+  status: "active" | "archived";
+  created_at: string;
+  updated_at: string;
+};
+
+export type StrategySummary = StrategyRecord & {
+  latest_run: RunSummary | null;
+  latest_validation: RunSummary | null;
+  versions_count: number;
+  runs_count: number;
+};
+
+export type StrategyDraft = {
+  id: string;
+  strategy_id: string;
+  prompt: string | null;
+  rationale: string | null;
+  assumptions: string[];
+  source: string;
+  class_name: string | null;
+  grid: Record<string, unknown[]>;
+  adapter: { name: "toy" | "market_data"; params: Record<string, unknown> };
+  train_size: number;
+  test_size: number;
+  step: number | null;
+  starting_cash: number;
+  select_by: "sharpe" | "total_return";
+  min_retention: number;
+  min_oos_trades: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type StrategyVersion = Omit<StrategyDraft, "created_at" | "updated_at"> & {
+  draft_id: string;
+  version_number: number;
+  frozen_at: string;
+};
+
+export type StrategyDetail = {
+  strategy: StrategyRecord;
+  drafts: StrategyDraft[];
+  versions: StrategyVersion[];
+  runs: RunSummary[];
 };
 
 /*
@@ -108,6 +181,61 @@ export async function getTemplates(): Promise<ApiTemplate[]> {
   return (await res.json()) as ApiTemplate[];
 }
 
+export async function createStrategy(body: {
+  title: string;
+  description?: string;
+}): Promise<StrategyRecord> {
+  const res = await fetch(`${API_BASE}/strategies`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ title: body.title, description: body.description ?? "" }),
+  });
+  if (!res.ok) throw new Error(`strategy: ${res.status}`);
+  return (await res.json()) as StrategyRecord;
+}
+
+export async function listStrategies(): Promise<StrategySummary[]> {
+  const res = await fetch(`${API_BASE}/strategies`);
+  if (!res.ok) throw new Error(`strategies: ${res.status}`);
+  return (await res.json()) as StrategySummary[];
+}
+
+export async function getStrategy(id: string): Promise<StrategyDetail> {
+  const res = await fetch(`${API_BASE}/strategies/${id}`);
+  if (!res.ok) throw new Error(`strategy: ${res.status}`);
+  return (await res.json()) as StrategyDetail;
+}
+
+export async function createDraft(
+  strategyId: string,
+  body: Omit<StrategyDraft, "id" | "strategy_id" | "created_at" | "updated_at">,
+): Promise<StrategyDraft> {
+  const res = await fetch(`${API_BASE}/strategies/${strategyId}/drafts`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`draft: ${res.status}`);
+  return (await res.json()) as StrategyDraft;
+}
+
+export async function createVersion(draftId: string): Promise<StrategyVersion> {
+  const res = await fetch(`${API_BASE}/drafts/${draftId}/versions`, { method: "POST" });
+  if (!res.ok) throw new Error(`version: ${res.status}`);
+  return (await res.json()) as StrategyVersion;
+}
+
+export async function runVersion(
+  versionId: string,
+  runKind: RunKind,
+): Promise<{ id: string }> {
+  const res = await fetch(`${API_BASE}/versions/${versionId}/${runKind === "validation" ? "validate" : "backtest"}`, {
+    method: "POST",
+  });
+  if (!res.ok) throw new Error(`version run: ${res.status}`);
+  return (await res.json()) as { id: string };
+}
+
 // The caller's runs, newest activity first (GET /runs returns lean summaries).
 export async function listRuns(): Promise<RunSummary[]> {
   const res = await fetch(`${API_BASE}/runs`);
@@ -130,6 +258,12 @@ export async function submitRun(request: Record<string, unknown>): Promise<{ id:
     body: JSON.stringify(request),
   });
   if (!res.ok) throw new Error(`submit: ${res.status}`);
+  return (await res.json()) as { id: string };
+}
+
+export async function validateRun(id: string): Promise<{ id: string }> {
+  const res = await fetch(`${API_BASE}/runs/${id}/validate`, { method: "POST" });
+  if (!res.ok) throw new Error(`validate: ${res.status}`);
   return (await res.json()) as { id: string };
 }
 
@@ -165,27 +299,75 @@ export function streamRun(
   },
 ): () => void {
   let settled = false;
-  const ws = new WebSocket(`${WS_BASE}/runs/${id}/ws`);
+  let disposed = false;
+  let polling = false;
+  let failures = 0;
+  let pollTimer: number | null = null;
+  let ws: WebSocket | null = null;
 
-  ws.onmessage = (event) => {
-    let snap: RunSnapshot;
-    try {
-      snap = JSON.parse(event.data as string) as RunSnapshot;
-    } catch {
-      return;
-    }
-    if (!snap.state) return; // ignore non-snapshot frames (e.g. {detail})
+  const handleSnapshot = (snap: RunSnapshot) => {
+    if (disposed || !snap.state || settled) return;
     handlers.onSnapshot?.(snap);
     if (snap.state === "completed" || snap.state === "error") {
       settled = true;
       handlers.onSettled?.(snap);
-      ws.close();
+      ws?.close();
+      if (pollTimer) window.clearTimeout(pollTimer);
     }
   };
 
-  ws.onerror = () => {
-    if (!settled) handlers.onError?.();
+  const poll = () => {
+    if (disposed || settled) return;
+    pollTimer = window.setTimeout(() => {
+      getRun(id)
+        .then((snap) => {
+          failures = 0;
+          handleSnapshot(snap);
+          poll();
+        })
+        .catch(() => {
+          failures += 1;
+          if (failures >= 3) {
+            handlers.onError?.();
+            return;
+          }
+          poll();
+        });
+    }, 900);
   };
 
-  return () => ws.close();
+  const startPolling = () => {
+    if (polling || disposed || settled) return;
+    polling = true;
+    poll();
+  };
+
+  if (!ENABLE_WS_STREAM) {
+    startPolling();
+  } else {
+    ws = new WebSocket(`${WS_BASE}/runs/${id}/ws`);
+    ws.onmessage = (event) => {
+      let snap: RunSnapshot;
+      try {
+        snap = JSON.parse(event.data as string) as RunSnapshot;
+      } catch {
+        return;
+      }
+      handleSnapshot(snap); // ignores non-snapshot frames, e.g. {detail}
+    };
+
+    ws.onerror = () => {
+      startPolling();
+    };
+
+    ws.onclose = () => {
+      if (!settled) startPolling();
+    };
+  }
+
+  return () => {
+    disposed = true;
+    ws?.close();
+    if (pollTimer) window.clearTimeout(pollTimer);
+  };
 }

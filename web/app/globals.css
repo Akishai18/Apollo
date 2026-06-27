@@ -1,40 +1,40 @@
 @import "tailwindcss";
 
 /*
-  Apollo design system — dark & atmospheric.
-  Near-black base with a slowly drifting aurora, near-white text, one indigo
-  accent. Mono for every number. Restrained, premium, instrument-grade.
+  Apollo design system.
+  Public pages keep the original landing language; authenticated app routes opt
+  into the denser terminal/report theme with .app-terminal.
 */
 
 @theme {
   /* Surfaces (dark) */
-  --color-bg: #090a10; /* page base, near-black with a blue lean */
-  --color-bg-soft: #0c0e16; /* alternating bands */
-  --color-surface: #13151f; /* cards / panels */
-  --color-surface-2: #191c27; /* raised within a card */
-  --color-elevated: #1f2331; /* chips, inputs */
+  --color-bg: #090a10;
+  --color-bg-soft: #0c0e16;
+  --color-surface: #13151f;
+  --color-surface-2: #191c27;
+  --color-elevated: #1f2331;
 
   /* Text */
-  --color-text: #eef0f6; /* headings, near-white */
-  --color-text-dim: #b3b8c6; /* body */
-  --color-muted: #868c9d; /* secondary */
-  --color-faint: #595f70; /* labels, captions */
+  --color-text: #eef0f6;
+  --color-text-dim: #b3b8c6;
+  --color-muted: #868c9d;
+  --color-faint: #595f70;
 
   /* Lines */
-  --color-line: #20232f; /* hairline */
-  --color-line-strong: #2c3140; /* visible border */
+  --color-line: #20232f;
+  --color-line-strong: #2c3140;
 
   /* Indigo accent (primary) + violet (secondary, for depth) + cyan (highlight) */
   --color-accent: #5d6bff;
-  --color-accent-hi: #7c87ff; /* hover / brighter */
+  --color-accent-hi: #7c87ff;
   --color-accent-ink: #ffffff; /* text on accent */
-  --color-accent-2: #8b5cf6; /* violet — second hue */
+  --color-accent-2: #8b5cf6;
   --color-accent-2-hi: #a78bfa;
-  --color-accent-3: #5fe6dd; /* cyan — sparing highlight (logo/glints) */
+  --color-accent-3: #5fe6dd;
 
   /* Verdict status (tuned for dark) */
-  --color-pass: #34d399; /* emerald */
-  --color-reject: #fb7185; /* rose */
+  --color-pass: #34d399;
+  --color-reject: #fb7185;
 
   /* Fonts (next/font sets the underlying --ff-* variables on <html>) */
   --font-display: var(--ff-display), ui-sans-serif, system-ui, sans-serif;
@@ -64,6 +64,40 @@
   body {
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
+    background:
+      radial-gradient(circle at 50% -20%, rgba(93, 107, 255, 0.18), transparent 38rem),
+      var(--color-bg);
+  }
+
+  .app-terminal {
+    --color-bg: #07080c;
+    --color-bg-soft: #090a10;
+    --color-surface: #0d0f16;
+    --color-surface-2: #11141d;
+    --color-elevated: #141824;
+    --color-text: #edf0f7;
+    --color-text-dim: #a8adbb;
+    --color-muted: #767d8f;
+    --color-faint: #4d5363;
+    --color-line: #1a1d27;
+    --color-line-strong: #2a2f3d;
+    --color-accent: #7167ff;
+    --color-accent-hi: #8b82ff;
+    --color-accent-ink: #ffffff;
+    --color-accent-2: #5d6bff;
+    --color-accent-2-hi: #8b82ff;
+    --color-accent-3: #71e8c5;
+    --color-pass: #64d99b;
+    --color-reject: #ff6b85;
+    --font-display: var(--ff-app-sans), ui-sans-serif, system-ui, sans-serif;
+    --font-sans: var(--ff-app-sans), ui-sans-serif, system-ui, sans-serif;
+    --font-mono: var(--ff-app-mono), ui-monospace, "SFMono-Regular", monospace;
+    --radius-xs: 2px;
+    --radius-sm: 4px;
+    --radius-md: 6px;
+    --radius-lg: 8px;
+    --radius-xl: 10px;
+    --radius-2xl: 12px;
   }
 
   ::selection {
@@ -76,7 +110,7 @@
     font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
     font-feature-settings: "tnum" 1;
-    letter-spacing: -0.01em;
+    letter-spacing: 0;
   }
 
   .focusable:focus-visible {
@@ -86,71 +120,79 @@
   }
 }
 
-/* ---- Material system: lit surfaces, glass, gradients ---- */
-/* In @layer components so Tailwind utilities (borders, bg, focus states) still
-   override these when used together. */
+/* ---- Material system: flat report surfaces ---- */
 @layer components {
 .panel {
-  background-image: linear-gradient(
-    180deg,
-    color-mix(in oklab, var(--color-surface), white 6%),
-    var(--color-surface)
-  );
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent 34%),
+    var(--color-surface);
   border: 1px solid var(--color-line);
   box-shadow:
-    inset 0 1px 0 0 rgba(255, 255, 255, 0.05),
-    0 14px 34px -16px rgba(0, 0, 0, 0.55);
+    0 24px 70px rgba(0, 0, 0, 0.26),
+    inset 0 1px 0 rgba(255, 255, 255, 0.03);
 }
 .panel-hover {
   transition:
     transform 0.28s var(--ease-out-soft),
-    box-shadow 0.28s var(--ease-out-soft),
+    background-color 0.18s ease,
     border-color 0.28s var(--ease-out-soft);
 }
 .panel-hover:hover {
-  transform: translateY(-3px);
-  border-color: color-mix(in oklab, var(--color-accent), transparent 55%);
-  box-shadow:
-    inset 0 1px 0 0 rgba(255, 255, 255, 0.07),
-    0 26px 56px -20px rgba(0, 0, 0, 0.6),
-    0 0 0 1px color-mix(in oklab, var(--color-accent), transparent 72%);
+  background-color: var(--color-surface-2);
+  border-color: var(--color-line-strong);
+  transform: translateY(-2px);
+}
+
+.app-terminal .panel {
+  background: var(--color-surface);
+  border: 1px solid var(--color-line);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.025);
+}
+.app-terminal .panel-hover:hover {
+  transform: none;
 }
 
 /* Form control used across the Backtester Lab. */
 .lab-input {
   width: 100%;
-  height: 2.25rem;
-  border-radius: 0.5rem;
+  height: 1.9rem;
+  border-radius: var(--radius-sm);
   border: 1px solid var(--color-line);
-  background-color: color-mix(in oklab, var(--color-bg), transparent 40%);
-  padding: 0 0.625rem;
-  font-size: 0.8125rem;
+  background-color: #080910;
+  padding: 0 0.5rem;
+  font-size: 0.75rem;
   color: var(--color-text-dim);
 }
 .lab-input:focus {
   outline: none;
-  border-color: color-mix(in oklab, var(--color-accent), transparent 50%);
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 1px color-mix(in oklab, var(--color-accent), transparent 60%);
 }
 textarea.lab-input {
   height: auto;
-  padding: 0.5rem 0.625rem;
+  padding: 0.5rem;
   line-height: 1.5;
 }
 
 /* Translucent, blurred, lit-edge surface for floating elements. */
 .glass {
-  background-color: color-mix(in oklab, var(--color-surface), transparent 26%);
-  backdrop-filter: blur(18px);
-  -webkit-backdrop-filter: blur(18px);
-  border: 1px solid var(--color-line-strong);
+  background-color: color-mix(in oklab, var(--color-surface), transparent 16%);
+  border: 1px solid var(--color-line);
   box-shadow:
-    inset 0 1px 0 0 rgba(255, 255, 255, 0.07),
-    0 28px 64px -28px rgba(0, 0, 0, 0.7);
+    0 18px 60px rgba(0, 0, 0, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+.app-terminal .glass {
+  background-color: var(--color-surface);
+  box-shadow: none;
 }
 
 /* Indigo → violet, the signature gradient (buttons, glows, fills). */
 .accent-gradient {
-  background-image: linear-gradient(130deg, var(--color-accent), var(--color-accent-2));
+  background: linear-gradient(135deg, var(--color-accent), var(--color-accent-2));
+}
+.app-terminal .accent-gradient {
+  background: linear-gradient(180deg, var(--color-accent-hi), var(--color-accent));
 }
 .text-gradient {
   background-image: linear-gradient(118deg, var(--color-accent-hi) 10%, var(--color-accent-2-hi) 90%);

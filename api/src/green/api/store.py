@@ -27,9 +27,9 @@ from datetime import UTC, datetime
 from typing import Any, cast
 
 import psycopg
-from psycopg import Connection
 from psycopg.rows import tuple_row
 from psycopg.types.json import Jsonb
+from psycopg_pool import ConnectionPool
 
 from green.api.models import (
     ProgressInfo,
@@ -918,16 +918,29 @@ class PostgresRunStore(RunStore):
 
     FastAPI connects server-side and preserves the same application-level owner
     checks as SQLite. The Supabase migration adds RLS as defense in depth.
+
+    Uses a connection pool rather than one long-lived connection: managed
+    Postgres (Supabase pooler, Render) reaps idle connections and restarts for
+    maintenance, which would leave a single shared connection permanently
+    "closed" and 500 every request. The pool health-checks each connection
+    before handing it out and recycles idle ones, so a reaped connection is
+    transparently replaced instead of surfacing as an error.
     """
 
     def __init__(self, database_url: str) -> None:
-        self._conn: Connection[tuple[Any, ...]] = psycopg.connect(
+        self._pool: ConnectionPool[psycopg.Connection[tuple[Any, ...]]] = ConnectionPool(
             database_url,
-            autocommit=True,
-            row_factory=tuple_row,
-            prepare_threshold=None,
+            min_size=1,
+            max_size=10,
+            max_idle=60.0,  # recycle before the server reaps idle connections
+            check=ConnectionPool.check_connection,  # validate liveness on checkout
+            kwargs={
+                "autocommit": True,
+                "row_factory": tuple_row,
+                "prepare_threshold": None,
+            },
+            open=True,
         )
-        self._lock = threading.Lock()
 
     def create(self, run_id: str, user_id: str, request: RunRequest) -> StoredRun:
         now = _now_iso()
@@ -939,7 +952,7 @@ class PostgresRunStore(RunStore):
             created_at=now,
             updated_at=now,
         )
-        with self._lock, self._conn.cursor() as cur:
+        with self._pool.connection() as conn, conn.cursor() as cur:
             cur.execute(
                 "INSERT INTO public.runs "
                 "(id, user_id, strategy_id, strategy_version_id, state, request_json, "
@@ -958,7 +971,7 @@ class PostgresRunStore(RunStore):
         return run
 
     def get(self, run_id: str) -> StoredRun | None:
-        with self._lock, self._conn.cursor() as cur:
+        with self._pool.connection() as conn, conn.cursor() as cur:
             cur.execute(
                 "SELECT id, user_id::text, state, request_json, progress_json, verdict_json, "
                 "error, note, prompt, created_at, updated_at FROM public.runs WHERE id = %s",
@@ -1009,14 +1022,14 @@ class PostgresRunStore(RunStore):
         sets.append("updated_at = %s")
         values.append(_now_iso())
         values.append(run_id)
-        with self._lock, self._conn.cursor() as cur:
+        with self._pool.connection() as conn, conn.cursor() as cur:
             cur.execute(
                 cast("Any", f"UPDATE public.runs SET {', '.join(sets)} WHERE id = %s"),
                 values,
             )
 
     def list_for_user(self, user_id: str) -> list[StoredRun]:
-        with self._lock, self._conn.cursor() as cur:
+        with self._pool.connection() as conn, conn.cursor() as cur:
             cur.execute(
                 "SELECT id, user_id::text, state, request_json, progress_json, verdict_json, "
                 "error, note, prompt, created_at, updated_at "
@@ -1036,7 +1049,7 @@ class PostgresRunStore(RunStore):
             created_at=now,
             updated_at=now,
         )
-        with self._lock, self._conn.cursor() as cur:
+        with self._pool.connection() as conn, conn.cursor() as cur:
             cur.execute(
                 "INSERT INTO public.strategies "
                 "(id, user_id, title, description, status, created_at, updated_at) "
@@ -1054,7 +1067,7 @@ class PostgresRunStore(RunStore):
         return record
 
     def list_strategies_for_user(self, user_id: str) -> list[StrategyRecord]:
-        with self._lock, self._conn.cursor() as cur:
+        with self._pool.connection() as conn, conn.cursor() as cur:
             cur.execute(
                 "SELECT id, title, description, status, created_at, updated_at "
                 "FROM public.strategies WHERE user_id = %s ORDER BY updated_at DESC",
@@ -1064,7 +1077,7 @@ class PostgresRunStore(RunStore):
         return [self._row_to_strategy(row) for row in rows]
 
     def get_strategy_for_user(self, strategy_id: str, user_id: str) -> StrategyRecord | None:
-        with self._lock, self._conn.cursor() as cur:
+        with self._pool.connection() as conn, conn.cursor() as cur:
             cur.execute(
                 "SELECT id, title, description, status, created_at, updated_at "
                 "FROM public.strategies WHERE id = %s AND user_id = %s",
@@ -1086,7 +1099,7 @@ class PostgresRunStore(RunStore):
             created_at=now,
             updated_at=now,
         )
-        with self._lock, self._conn.cursor() as cur:
+        with self._pool.connection() as conn, conn.cursor() as cur:
             cur.execute(
                 "INSERT INTO public.strategy_drafts "
                 "(id, strategy_id, user_id, draft_json, created_at, updated_at) "
@@ -1115,7 +1128,7 @@ class PostgresRunStore(RunStore):
             data[key] = value
         data["updated_at"] = now
         record = StrategyDraftRecord.model_validate(data)
-        with self._lock, self._conn.cursor() as cur:
+        with self._pool.connection() as conn, conn.cursor() as cur:
             cur.execute(
                 "UPDATE public.strategy_drafts SET draft_json = %s, updated_at = %s "
                 "WHERE id = %s AND user_id = %s",
@@ -1125,7 +1138,7 @@ class PostgresRunStore(RunStore):
         return record
 
     def get_draft_for_user(self, draft_id: str, user_id: str) -> StrategyDraftRecord | None:
-        with self._lock, self._conn.cursor() as cur:
+        with self._pool.connection() as conn, conn.cursor() as cur:
             cur.execute(
                 "SELECT draft_json FROM public.strategy_drafts WHERE id = %s AND user_id = %s",
                 (draft_id, user_id),
@@ -1138,7 +1151,7 @@ class PostgresRunStore(RunStore):
     ) -> list[StrategyDraftRecord]:
         if self.get_strategy_for_user(strategy_id, user_id) is None:
             return []
-        with self._lock, self._conn.cursor() as cur:
+        with self._pool.connection() as conn, conn.cursor() as cur:
             cur.execute(
                 "SELECT draft_json FROM public.strategy_drafts "
                 "WHERE strategy_id = %s AND user_id = %s ORDER BY created_at DESC",
@@ -1154,7 +1167,7 @@ class PostgresRunStore(RunStore):
         if draft is None:
             return None
         now = _now_iso()
-        with self._lock, self._conn.cursor() as cur:
+        with self._pool.connection() as conn, conn.cursor() as cur:
             cur.execute(
                 "SELECT MAX(version_number) FROM public.strategy_versions "
                 "WHERE strategy_id = %s AND user_id = %s",
@@ -1189,7 +1202,7 @@ class PostgresRunStore(RunStore):
     def get_version_for_user(
         self, version_id: str, user_id: str
     ) -> StrategyVersionRecord | None:
-        with self._lock, self._conn.cursor() as cur:
+        with self._pool.connection() as conn, conn.cursor() as cur:
             cur.execute(
                 "SELECT version_json FROM public.strategy_versions WHERE id = %s AND user_id = %s",
                 (version_id, user_id),
@@ -1202,7 +1215,7 @@ class PostgresRunStore(RunStore):
     ) -> list[StrategyVersionRecord]:
         if self.get_strategy_for_user(strategy_id, user_id) is None:
             return []
-        with self._lock, self._conn.cursor() as cur:
+        with self._pool.connection() as conn, conn.cursor() as cur:
             cur.execute(
                 "SELECT version_json FROM public.strategy_versions "
                 "WHERE strategy_id = %s AND user_id = %s ORDER BY version_number",
@@ -1214,7 +1227,7 @@ class PostgresRunStore(RunStore):
     def list_runs_for_strategy(self, strategy_id: str, user_id: str) -> list[StoredRun]:
         if self.get_strategy_for_user(strategy_id, user_id) is None:
             return []
-        with self._lock, self._conn.cursor() as cur:
+        with self._pool.connection() as conn, conn.cursor() as cur:
             cur.execute(
                 "SELECT id, user_id::text, state, request_json, progress_json, verdict_json, "
                 "error, note, prompt, created_at, updated_at "
@@ -1231,7 +1244,7 @@ class PostgresRunStore(RunStore):
         if current is None:
             return None
         updated = current.model_copy(update={"promoted": promoted})
-        with self._lock, self._conn.cursor() as cur:
+        with self._pool.connection() as conn, conn.cursor() as cur:
             cur.execute(
                 "UPDATE public.strategy_versions SET version_json = %s "
                 "WHERE id = %s AND user_id = %s",
@@ -1240,7 +1253,7 @@ class PostgresRunStore(RunStore):
         return updated
 
     def list_promoted_versions(self, user_id: str) -> list[StrategyVersionRecord]:
-        with self._lock, self._conn.cursor() as cur:
+        with self._pool.connection() as conn, conn.cursor() as cur:
             cur.execute(
                 "SELECT version_json FROM public.strategy_versions "
                 "WHERE user_id = %s ORDER BY version_number",
@@ -1289,8 +1302,7 @@ class PostgresRunStore(RunStore):
         )
 
     def close(self) -> None:
-        with self._lock:
-            self._conn.close()
+        self._pool.close()
 
 
 def _db_time_to_iso(value: object) -> str:

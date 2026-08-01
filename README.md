@@ -1,4 +1,4 @@
-# project-green (working title)
+# Apollo
 
 A platform for developing and **validating** algorithmic trading strategies. You
 describe or write a strategy; the platform refuses to trust it until a faithful

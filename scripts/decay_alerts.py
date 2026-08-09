@@ -10,7 +10,6 @@ surfaces it; optionally posts to a Slack incoming webhook.
 Pair with scripts/revalidate.py on a schedule:
     revalidate.py  → re-runs promoted strategies on fresh data
     decay_alerts.py → flags the ones that no longer hold up
-
 Usage:
     GREEN_API_URL=http://localhost:8000 \
     GREEN_API_TOKEN=<bearer-if-auth-on> \

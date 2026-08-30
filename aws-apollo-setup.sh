@@ -12,7 +12,7 @@ set -u
 export AWS_PAGER=""
 REGION=us-east-1
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-GH_REPO="Akishai18/trade"     # OIDC trust is pinned to this exact owner/name —
+GH_REPO="Akishai18/Apollo"    # OIDC trust is pinned to this exact owner/name —
                               # if the GitHub repo is ever renamed, rerun step 2
 SERVICE=apollo-api
 REPO=apollo-api

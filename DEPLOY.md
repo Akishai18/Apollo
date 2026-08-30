@@ -26,7 +26,7 @@ Three managed pieces:
 1. AWS console → **CloudShell** → Actions → **Upload file** → `aws-apollo-setup.sh`
    (upload the file; don't paste — long pastes get mangled).
 2. `bash aws-apollo-setup.sh` — creates the ECR repo (`apollo-api`), the GitHub
-   OIDC deploy role (`apollo-github-deploy`, trust pinned to `Akishai18/trade`),
+   OIDC deploy role (`apollo-github-deploy`, trust pinned to `Akishai18/Apollo`),
    and the Lightsail container service (`apollo-api`, nano) with ECR pulling
    enabled.
 3. Copy the two values it prints: the **deploy role ARN** and the **service URL**.

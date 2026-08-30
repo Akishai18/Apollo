@@ -12,9 +12,9 @@ from collections.abc import Callable
 
 import jwt
 import pytest
-from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from jwt import PyJWKClient
-from jwt.algorithms import RSAAlgorithm
+from jwt.algorithms import ECAlgorithm, RSAAlgorithm
 
 from green.api.auth import AuthError, verify_supabase_jwt
 
@@ -74,9 +74,42 @@ def test_valid_rs256_jwks_token_yields_the_subject(
     assert principal.user_id == "user-123"
 
 
-def test_rs256_path_rejects_hs256_token(user_token: Callable[..., str]) -> None:
+def test_valid_es256_jwks_token_yields_the_subject(
+    monkeypatch: pytest.MonkeyPatch, far_future: int
+) -> None:
+    """Supabase's modern signing keys issue ES256 — the JWKS path must accept it."""
+    key = ec.generate_private_key(ec.SECP256R1())
+    public_jwk = json.loads(ECAlgorithm.to_jwk(key.public_key()))
+    public_jwk.update({"kid": "test-ec-key", "alg": "ES256", "use": "sig"})
+
+    def fetch_data(_self: PyJWKClient) -> dict[str, object]:
+        return {"keys": [public_jwk]}
+
+    monkeypatch.setattr(PyJWKClient, "fetch_data", fetch_data)
+    token = jwt.encode(
+        {
+            "sub": "user-456",
+            "aud": "authenticated",
+            "iss": "https://project.supabase.co/auth/v1",
+            "exp": far_future,
+        },
+        key,
+        algorithm="ES256",
+        headers={"kid": "test-ec-key"},
+    )
+
+    principal = verify_supabase_jwt(
+        token,
+        jwks_url="https://project.supabase.co/auth/v1/.well-known/jwks.json",
+        issuer="https://project.supabase.co/auth/v1",
+    )
+
+    assert principal.user_id == "user-456"
+
+
+def test_jwks_path_rejects_hs256_token(user_token: Callable[..., str]) -> None:
     token = user_token("user-123", _SECRET)
-    with pytest.raises(AuthError, match="expected RS256"):
+    with pytest.raises(AuthError, match="expected one of RS256, ES256"):
         verify_supabase_jwt(token, jwks_url="https://project.supabase.co/auth/v1/jwks")
 
 

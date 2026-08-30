@@ -4,7 +4,8 @@ FastAPI is the authoritative brain; Supabase is the identity primitive. We
 support both Supabase signing systems:
 
 - HS256 via the legacy shared JWT secret.
-- RS256 via the modern JWKS endpoint.
+- RS256/ES256 via the modern JWKS endpoint (Supabase's asymmetric signing keys;
+  new/migrated projects issue ES256, older ones RS256).
 
 In both cases the allowed algorithm is pinned from our config path, not trusted
 from a token's header, so `alg:none` / alg-confusion bypasses are rejected.
@@ -72,7 +73,7 @@ def verify_supabase_jwt(
             now=now,
         )
     assert jwks_url is not None
-    return _verify_rs256(
+    return _verify_jwks(
         token,
         jwks_url=jwks_url,
         audience=audience,
@@ -137,7 +138,13 @@ def _verify_hs256(
     return Principal(user_id=sub)
 
 
-def _verify_rs256(
+# Asymmetric algorithms the JWKS path accepts — pinned from OUR side. Never
+# HS* here: a symmetric alg against a public JWKS key is the classic
+# alg-confusion attack.
+_JWKS_ALGS: tuple[str, ...] = ("RS256", "ES256")
+
+
+def _verify_jwks(
     token: str,
     *,
     jwks_url: str,
@@ -152,8 +159,10 @@ def _verify_rs256(
         header = _decode_json(parts[0])
     except (ValueError, AuthError) as exc:
         raise AuthError("unreadable token header") from exc
-    if header.get("alg") != "RS256":
-        raise AuthError(f"unsupported alg {header.get('alg')!r}; expected RS256")
+    if header.get("alg") not in _JWKS_ALGS:
+        raise AuthError(
+            f"unsupported alg {header.get('alg')!r}; expected one of {', '.join(_JWKS_ALGS)}"
+        )
 
     try:
         key = _jwk_client(jwks_url).get_signing_key_from_jwt(token).key
@@ -161,7 +170,7 @@ def _verify_rs256(
         payload = jwt.decode(
             token,
             key=key,
-            algorithms=["RS256"],
+            algorithms=list(_JWKS_ALGS),
             audience=audience,
             issuer=issuer,
             leeway=leeway_seconds,

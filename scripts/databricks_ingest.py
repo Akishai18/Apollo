@@ -85,7 +85,9 @@ def _clean(sdf):  # type: ignore[no-untyped-def]
             & F.col("low").isNotNull()
             & F.col("close").isNotNull()
         )
-        .where((F.col("open") > 0) & (F.col("high") > 0) & (F.col("low") > 0) & (F.col("close") > 0))
+        .where(
+            (F.col("open") > 0) & (F.col("high") > 0) & (F.col("low") > 0) & (F.col("close") > 0)
+        )
         .where(F.col("high") >= F.col("low"))
         .where(F.col("volume") >= 0)
         .dropDuplicates(["symbol", "date"])

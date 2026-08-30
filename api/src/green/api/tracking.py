@@ -18,7 +18,9 @@ def _configure_mlflow(uri: str) -> None:
 
     if uri == "databricks":  # reuse the Delta workspace creds for MLflow auth
         host = os.environ.get("GREEN_DATABRICKS_HOST", "")
-        os.environ.setdefault("DATABRICKS_HOST", host if host.startswith("http") else f"https://{host}")
+        os.environ.setdefault(
+            "DATABRICKS_HOST", host if host.startswith("http") else f"https://{host}"
+        )
         os.environ.setdefault("DATABRICKS_TOKEN", os.environ.get("GREEN_DATABRICKS_TOKEN", ""))
     mlflow.set_tracking_uri(uri)
 

@@ -261,8 +261,7 @@ class JobRunner:
             drafts=tuple(self._store.list_drafts_for_strategy(strategy_id, user_id)),
             versions=tuple(self._store.list_versions_for_strategy(strategy_id, user_id)),
             runs=tuple(
-                run.to_summary()
-                for run in self._store.list_runs_for_strategy(strategy_id, user_id)
+                run.to_summary() for run in self._store.list_runs_for_strategy(strategy_id, user_id)
             ),
         )
 
@@ -283,8 +282,7 @@ class JobRunner:
 
     def _strategy_summary(self, user_id: str, strategy: StrategyRecord) -> StrategySummary:
         runs = [
-            run.to_summary()
-            for run in self._store.list_runs_for_strategy(strategy.id, user_id)
+            run.to_summary() for run in self._store.list_runs_for_strategy(strategy.id, user_id)
         ]
         versions = self._store.list_versions_for_strategy(strategy.id, user_id)
         latest_run = max(runs, key=lambda run: run.updated_at, default=None)
@@ -621,17 +619,90 @@ def _title_from_prompt(prompt: str) -> str:
 _SYMBOL_STOPWORDS = frozenset(
     {
         # articles / prepositions / conjunctions / verbs that scan as tickers
-        "A", "AN", "AND", "AS", "AT", "BE", "BY", "DO", "FOR", "GO", "IF", "IN",
-        "IS", "IT", "ME", "MY", "NO", "OF", "ON", "OR", "SO", "TO", "UP", "US", "WE",
-        "THE", "WHEN", "WITH", "THAT", "THIS", "FROM", "INTO", "OVER", "THEN",
+        "A",
+        "AN",
+        "AND",
+        "AS",
+        "AT",
+        "BE",
+        "BY",
+        "DO",
+        "FOR",
+        "GO",
+        "IF",
+        "IN",
+        "IS",
+        "IT",
+        "ME",
+        "MY",
+        "NO",
+        "OF",
+        "ON",
+        "OR",
+        "SO",
+        "TO",
+        "UP",
+        "US",
+        "WE",
+        "THE",
+        "WHEN",
+        "WITH",
+        "THAT",
+        "THIS",
+        "FROM",
+        "INTO",
+        "OVER",
+        "THEN",
         # strategy / trading vocabulary
-        "BUY", "SELL", "EXIT", "HOLD", "LONG", "SHORT", "FAST", "SLOW", "MEAN",
-        "STOCK", "STOCKS", "SHARE", "SHARES", "EQUITY", "PRICE", "TREND", "CROSS",
-        "BAND", "STOP", "RISK", "PROFIT", "LOSS", "TRADE", "TRADES", "BUILD",
-        "STRATEGY", "AROUND", "MAXIMIZE", "MARKET", "DAILY", "WEEKLY", "AVERAGE",
+        "BUY",
+        "SELL",
+        "EXIT",
+        "HOLD",
+        "LONG",
+        "SHORT",
+        "FAST",
+        "SLOW",
+        "MEAN",
+        "STOCK",
+        "STOCKS",
+        "SHARE",
+        "SHARES",
+        "EQUITY",
+        "PRICE",
+        "TREND",
+        "CROSS",
+        "BAND",
+        "STOP",
+        "RISK",
+        "PROFIT",
+        "LOSS",
+        "TRADE",
+        "TRADES",
+        "BUILD",
+        "STRATEGY",
+        "AROUND",
+        "MAXIMIZE",
+        "MARKET",
+        "DAILY",
+        "WEEKLY",
+        "AVERAGE",
         # indicator acronyms (not tickers)
-        "MA", "SMA", "EMA", "WMA", "RSI", "ATR", "MACD", "VWAP", "ADX", "BB",
-        "OHLC", "PNL", "ROI", "ETF", "AI", "ML",
+        "MA",
+        "SMA",
+        "EMA",
+        "WMA",
+        "RSI",
+        "ATR",
+        "MACD",
+        "VWAP",
+        "ADX",
+        "BB",
+        "OHLC",
+        "PNL",
+        "ROI",
+        "ETF",
+        "AI",
+        "ML",
     }
 )
 
@@ -667,9 +738,7 @@ def _prompt_symbol(prompt: str) -> str | None:
     return None
 
 
-def _grid_with_prompt_symbol(
-    grid: dict[str, list[Any]], prompt: str
-) -> dict[str, list[Any]]:
+def _grid_with_prompt_symbol(grid: dict[str, list[Any]], prompt: str) -> dict[str, list[Any]]:
     symbol = _prompt_symbol(prompt)
     current = _grid_symbols(grid)
     if symbol is None or any(_is_real_symbol(s) for s in current):
@@ -730,7 +799,9 @@ def _log_mlflow(job: _Job, verdict: Verdict) -> None:
 
         if uri == "databricks":  # reuse the Delta workspace creds for MLflow auth
             host = os.environ.get("GREEN_DATABRICKS_HOST", "")
-            os.environ.setdefault("DATABRICKS_HOST", host if host.startswith("http") else f"https://{host}")
+            os.environ.setdefault(
+                "DATABRICKS_HOST", host if host.startswith("http") else f"https://{host}"
+            )
             os.environ.setdefault("DATABRICKS_TOKEN", os.environ.get("GREEN_DATABRICKS_TOKEN", ""))
         mlflow.set_tracking_uri(uri)
         mlflow.set_experiment(os.environ.get("GREEN_MLFLOW_EXPERIMENT", "apollo"))

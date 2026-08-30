@@ -62,7 +62,10 @@ def bronze_market_raw():  # noqa: ANN201
 @dlt.table(comment="Typed, de-duplicated, quality-checked OHLCV.")
 @dlt.expect_or_drop("valid_symbol", "symbol IS NOT NULL AND symbol <> ''")
 @dlt.expect_or_drop("valid_date", "date IS NOT NULL")
-@dlt.expect_or_drop("prices_present", "open IS NOT NULL AND high IS NOT NULL AND low IS NOT NULL AND close IS NOT NULL")
+@dlt.expect_or_drop(
+    "prices_present",
+    "open IS NOT NULL AND high IS NOT NULL AND low IS NOT NULL AND close IS NOT NULL",
+)
 @dlt.expect_or_drop("positive_prices", "open > 0 AND high > 0 AND low > 0 AND close > 0")
 @dlt.expect_or_drop("nonneg_volume", "volume >= 0")
 @dlt.expect_or_drop("coherent_range", "high >= low")

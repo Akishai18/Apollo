@@ -324,9 +324,7 @@ class InMemoryRunStore(RunStore):
     def list_strategies_for_user(self, user_id: str) -> list[StrategyRecord]:
         with self._lock:
             return [
-                s
-                for sid, s in self._strategies.items()
-                if self._strategy_users.get(sid) == user_id
+                s for sid, s in self._strategies.items() if self._strategy_users.get(sid) == user_id
             ]
 
     def get_strategy_for_user(self, strategy_id: str, user_id: str) -> StrategyRecord | None:
@@ -377,9 +375,7 @@ class InMemoryRunStore(RunStore):
                 return None
             return self._drafts.get(draft_id)
 
-    def list_drafts_for_strategy(
-        self, strategy_id: str, user_id: str
-    ) -> list[StrategyDraftRecord]:
+    def list_drafts_for_strategy(self, strategy_id: str, user_id: str) -> list[StrategyDraftRecord]:
         with self._lock:
             if self._strategy_users.get(strategy_id) != user_id:
                 return []
@@ -415,9 +411,7 @@ class InMemoryRunStore(RunStore):
             self._touch_strategy(record.strategy_id, now)
             return record
 
-    def get_version_for_user(
-        self, version_id: str, user_id: str
-    ) -> StrategyVersionRecord | None:
+    def get_version_for_user(self, version_id: str, user_id: str) -> StrategyVersionRecord | None:
         with self._lock:
             if self._version_users.get(version_id) != user_id:
                 return None
@@ -746,9 +740,7 @@ class SqliteRunStore(RunStore):
             ).fetchone()
         return StrategyDraftRecord.model_validate_json(cast("str", row[0])) if row else None
 
-    def list_drafts_for_strategy(
-        self, strategy_id: str, user_id: str
-    ) -> list[StrategyDraftRecord]:
+    def list_drafts_for_strategy(self, strategy_id: str, user_id: str) -> list[StrategyDraftRecord]:
         if self.get_strategy_for_user(strategy_id, user_id) is None:
             return []
         with self._lock:
@@ -797,9 +789,7 @@ class SqliteRunStore(RunStore):
             self._conn.commit()
         return record
 
-    def get_version_for_user(
-        self, version_id: str, user_id: str
-    ) -> StrategyVersionRecord | None:
+    def get_version_for_user(self, version_id: str, user_id: str) -> StrategyVersionRecord | None:
         with self._lock:
             row = self._conn.execute(
                 "SELECT version_json FROM strategy_versions WHERE id = ? AND user_id = ?",
@@ -1146,9 +1136,7 @@ class PostgresRunStore(RunStore):
             row = cur.fetchone()
         return StrategyDraftRecord.model_validate(row[0]) if row else None
 
-    def list_drafts_for_strategy(
-        self, strategy_id: str, user_id: str
-    ) -> list[StrategyDraftRecord]:
+    def list_drafts_for_strategy(self, strategy_id: str, user_id: str) -> list[StrategyDraftRecord]:
         if self.get_strategy_for_user(strategy_id, user_id) is None:
             return []
         with self._pool.connection() as conn, conn.cursor() as cur:
@@ -1199,9 +1187,7 @@ class PostgresRunStore(RunStore):
             self._touch_strategy_sql(cur, record.strategy_id, now)
         return record
 
-    def get_version_for_user(
-        self, version_id: str, user_id: str
-    ) -> StrategyVersionRecord | None:
+    def get_version_for_user(self, version_id: str, user_id: str) -> StrategyVersionRecord | None:
         with self._pool.connection() as conn, conn.cursor() as cur:
             cur.execute(
                 "SELECT version_json FROM public.strategy_versions WHERE id = %s AND user_id = %s",

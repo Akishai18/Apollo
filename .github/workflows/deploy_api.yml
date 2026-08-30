@@ -1,0 +1,124 @@
+name: Deploy API to Lightsail
+
+# Builds the Docker image, pushes it to ECR, and deploys it to the Lightsail
+# container service (created once by aws-apollo-setup.sh — see DEPLOY.md).
+#
+# Triggered by pushes to main (backend changes) or manual runs from the
+# Actions tab. Skips silently until the repo variable AWS_DEPLOY_ROLE_ARN is
+# set, so CI stays green before the one-time AWS setup is done.
+#
+# Requires repo variables: AWS_REGION, AWS_DEPLOY_ROLE_ARN
+# Requires repo secrets:   GREEN_DATABASE_URL, GREEN_SUPABASE_URL,
+#   GREEN_CORS_ORIGINS, GEMINI_API_KEY, GREEN_DATABRICKS_HOST,
+#   GREEN_DATABRICKS_HTTP_PATH, GREEN_DATABRICKS_TOKEN, GREEN_MARKET_TABLE
+#   (optional: ANTHROPIC_API_KEY, GREEN_MLFLOW_TRACKING_URI,
+#   GREEN_MLFLOW_EXPERIMENT — unset ones are omitted from the container env)
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'web/**'
+      - '**.md'
+  workflow_dispatch:
+
+permissions:
+  id-token: write # OIDC auth to AWS
+  contents: read
+
+env:
+  ECR_REPOSITORY: apollo-api
+  SERVICE_NAME: apollo-api
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    if: vars.AWS_DEPLOY_ROLE_ARN != ''
+    concurrency:
+      group: deploy-api
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push image
+        id: build
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          TAG=$(git rev-parse --short HEAD)
+          docker build -t "$ECR_REGISTRY/$ECR_REPOSITORY:$TAG" .
+          docker push "$ECR_REGISTRY/$ECR_REPOSITORY:$TAG"
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy to Lightsail
+        env:
+          IMAGE: ${{ steps.build.outputs.image }}
+          GREEN_DATABASE_URL: ${{ secrets.GREEN_DATABASE_URL }}
+          GREEN_SUPABASE_URL: ${{ secrets.GREEN_SUPABASE_URL }}
+          GREEN_CORS_ORIGINS: ${{ secrets.GREEN_CORS_ORIGINS }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GREEN_DATABRICKS_HOST: ${{ secrets.GREEN_DATABRICKS_HOST }}
+          GREEN_DATABRICKS_HTTP_PATH: ${{ secrets.GREEN_DATABRICKS_HTTP_PATH }}
+          GREEN_DATABRICKS_TOKEN: ${{ secrets.GREEN_DATABRICKS_TOKEN }}
+          GREEN_MARKET_TABLE: ${{ secrets.GREEN_MARKET_TABLE }}
+          GREEN_MLFLOW_TRACKING_URI: ${{ secrets.GREEN_MLFLOW_TRACKING_URI }}
+          GREEN_MLFLOW_EXPERIMENT: ${{ secrets.GREEN_MLFLOW_EXPERIMENT }}
+        run: |
+          # jq (not a heredoc) so secret values with quotes/specials can't
+          # break the JSON, and unset optional secrets are dropped entirely.
+          jq -n '{
+            api: {
+              image: env.IMAGE,
+              ports: { "8000": "HTTP" },
+              environment: ({
+                GREEN_STORE: "postgres",
+                PYTHONUNBUFFERED: "1",
+                GREEN_DATABASE_URL: env.GREEN_DATABASE_URL,
+                GREEN_SUPABASE_URL: env.GREEN_SUPABASE_URL,
+                GREEN_CORS_ORIGINS: env.GREEN_CORS_ORIGINS,
+                GEMINI_API_KEY: env.GEMINI_API_KEY,
+                ANTHROPIC_API_KEY: env.ANTHROPIC_API_KEY,
+                GREEN_DATABRICKS_HOST: env.GREEN_DATABRICKS_HOST,
+                GREEN_DATABRICKS_HTTP_PATH: env.GREEN_DATABRICKS_HTTP_PATH,
+                GREEN_DATABRICKS_TOKEN: env.GREEN_DATABRICKS_TOKEN,
+                GREEN_MARKET_TABLE: env.GREEN_MARKET_TABLE,
+                GREEN_MLFLOW_TRACKING_URI: env.GREEN_MLFLOW_TRACKING_URI,
+                GREEN_MLFLOW_EXPERIMENT: env.GREEN_MLFLOW_EXPERIMENT
+              } | with_entries(select(.value != null and .value != "")))
+            }
+          }' > /tmp/containers.json
+          jq -n '{
+            containerName: "api",
+            containerPort: 8000,
+            healthCheck: { path: "/healthz", successCodes: "200" }
+          }' > /tmp/endpoint.json
+          aws lightsail create-container-service-deployment \
+            --service-name "$SERVICE_NAME" \
+            --containers file:///tmp/containers.json \
+            --public-endpoint file:///tmp/endpoint.json
+
+      - name: Wait for deployment to go live
+        run: |
+          for i in $(seq 1 60); do
+            STATE=$(aws lightsail get-container-services --service-name "$SERVICE_NAME" \
+              --query 'containerServices[0].state' --output text)
+            echo "state: $STATE"
+            if [ "$STATE" = "RUNNING" ]; then exit 0; fi
+            if [ "$STATE" = "FAILED" ]; then exit 1; fi
+            sleep 15
+          done
+          echo "Timed out waiting for deployment to stabilize"
+          exit 1

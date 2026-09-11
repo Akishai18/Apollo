@@ -28,6 +28,11 @@ artifacts/
 *.db
 *.sqlite
 *.sqlite3
+# ...except the pinned synthetic fixture the tests and the synthetic adapter
+# read (deterministic, seed 0, ~28 KB; regenerate with
+# `uv run python -m green.adapters.synthetic`).
+!adapters/src/green/adapters/data/
+!adapters/src/green/adapters/data/synthetic_ohlcv.parquet
 
 # OS / editor
 .DS_Store

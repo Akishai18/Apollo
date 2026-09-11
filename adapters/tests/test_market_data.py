@@ -121,7 +121,7 @@ def test_delta_provider_builds_dataset_and_uses_cache(
 
 
 def test_delta_query_time_travel() -> None:
-    from green.adapters.market_data import _delta_query
+    from green.adapters.market_data import _delta_query  # pyright: ignore[reportPrivateUsage]
 
     sql, params = _delta_query("apollo.market.ohlcv", ("AAPL",), start=None, end=None, as_of=None)
     assert "VERSION AS OF" not in sql and "TIMESTAMP AS OF" not in sql

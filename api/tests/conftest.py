@@ -34,7 +34,7 @@ def _user_token(sub: str, secret: str, *, audience: str = "authenticated") -> st
 
 
 @pytest.fixture(autouse=True)
-def _isolate_market_cache(
+def isolate_market_cache(
     tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Never let tests (which mock the Yahoo fetch) write fake OHLCV into the

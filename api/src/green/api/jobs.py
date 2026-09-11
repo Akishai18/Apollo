@@ -804,7 +804,9 @@ def _log_mlflow(job: _Job, verdict: Verdict) -> None:
             )
             os.environ.setdefault("DATABRICKS_TOKEN", os.environ.get("GREEN_DATABRICKS_TOKEN", ""))
         mlflow.set_tracking_uri(uri)
-        mlflow.set_experiment(os.environ.get("GREEN_MLFLOW_EXPERIMENT", "apollo"))
+        mlflow.set_experiment(  # pyright: ignore[reportUnknownMemberType]
+            os.environ.get("GREEN_MLFLOW_EXPERIMENT", "apollo")
+        )
 
         req = job.request
         run_name = (job.prompt or req.class_name or "backtest")[:60]

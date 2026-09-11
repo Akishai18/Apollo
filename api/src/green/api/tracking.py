@@ -9,6 +9,7 @@ clean empty state instead of a 500.
 from __future__ import annotations
 
 import os
+from typing import Any
 
 from green.api.models import TrackedRun
 
@@ -43,13 +44,19 @@ def list_tracked_runs(limit: int = 100) -> list[TrackedRun]:
         )
         out: list[TrackedRun] = []
         for r in runs:
-            tags = r.data.tags
-            metrics = r.data.metrics
+            # mlflow's RunData/RunInfo accessors are unannotated properties;
+            # read them through Any and pin to their documented types once.
+            data: Any = r.data
+            info: Any = r.info
+            tags: dict[str, str] = data.tags
+            metrics: dict[str, float] = data.metrics
+            run_id: str = info.run_id
+            start_time: int | None = info.start_time
             passed_tag = tags.get("passed")
             out.append(
                 TrackedRun(
-                    run_id=r.info.run_id,
-                    name=tags.get("mlflow.runName") or r.info.run_id[:8],
+                    run_id=run_id,
+                    name=tags.get("mlflow.runName") or run_id[:8],
                     symbol=tags.get("symbol"),
                     adapter=tags.get("adapter"),
                     run_kind=tags.get("run_kind"),
@@ -57,7 +64,7 @@ def list_tracked_runs(limit: int = 100) -> list[TrackedRun]:
                     oos_sharpe=metrics.get("oos_sharpe"),
                     retention=metrics.get("retention"),
                     oos_trades=metrics.get("oos_trades"),
-                    created_at=r.info.start_time or 0,
+                    created_at=start_time or 0,
                 )
             )
         return out

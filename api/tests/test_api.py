@@ -487,7 +487,7 @@ def _fake_gen(source: str):  # type: ignore[no-untyped-def]
             class_name="",
             rationale="r",
             source=source,
-            params=[ParamSpec(name="symbol", values=["SYN"])],
+            params=(ParamSpec(name="symbol", values=["SYN"]),),
         )
         return strat, tier_config("free")
 
@@ -548,14 +548,23 @@ def test_completed_run_is_logged_to_mlflow(
         def __exit__(self, *_a: object) -> bool:
             return False
 
+    def _noop(*_a: object, **_k: object) -> None:
+        return None
+
+    def _start_run(*_a: object, **_k: object) -> _Ctx:
+        return _Ctx()
+
+    def _log_metrics(metrics: dict[str, float]) -> None:
+        captured.update(metrics)
+
     monkeypatch.setenv("GREEN_MLFLOW_TRACKING_URI", "stub")
-    monkeypatch.setattr(mlflow, "set_tracking_uri", lambda *_a, **_k: None)
-    monkeypatch.setattr(mlflow, "set_experiment", lambda *_a, **_k: None)
-    monkeypatch.setattr(mlflow, "start_run", lambda *_a, **_k: _Ctx())
-    monkeypatch.setattr(mlflow, "set_tags", lambda *_a, **_k: None)
-    monkeypatch.setattr(mlflow, "log_params", lambda *_a, **_k: None)
-    monkeypatch.setattr(mlflow, "log_text", lambda *_a, **_k: None)
-    monkeypatch.setattr(mlflow, "log_metrics", lambda metrics: captured.update(metrics))
+    monkeypatch.setattr(mlflow, "set_tracking_uri", _noop)
+    monkeypatch.setattr(mlflow, "set_experiment", _noop)
+    monkeypatch.setattr(mlflow, "start_run", _start_run)
+    monkeypatch.setattr(mlflow, "set_tags", _noop)
+    monkeypatch.setattr(mlflow, "log_params", _noop)
+    monkeypatch.setattr(mlflow, "log_text", _noop)
+    monkeypatch.setattr(mlflow, "log_metrics", _log_metrics)
 
     final = _gen_run(client, "mean reversion strategy")
     assert final["state"] == "completed"

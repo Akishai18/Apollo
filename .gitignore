@@ -34,6 +34,12 @@ artifacts/
 !adapters/src/green/adapters/data/
 !adapters/src/green/adapters/data/synthetic_ohlcv.parquet
 
+# Local AI-assistant tooling (per-developer skill packs, never part of the product)
+.agents/
+.claude/skills/
+.claude/settings.local.json
+skills-lock.json
+
 # OS / editor
 .DS_Store
 .idea/

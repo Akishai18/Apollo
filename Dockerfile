@@ -1,4 +1,5 @@
-# Apollo API (FastAPI + WebSocket + sandboxed gate). Container host: Render etc.
+# Apollo API (FastAPI + WebSocket + sandboxed gate). Runs on AWS Lightsail; see
+# deploy/README.md.
 # The web frontend is deployed separately (Vercel); this image is the backend only.
 FROM python:3.13-slim-bookworm
 
@@ -23,5 +24,5 @@ COPY api ./api
 RUN uv sync --frozen
 
 EXPOSE 8000
-# Render (and most hosts) inject $PORT; default to 8000 locally.
+# Most container hosts inject $PORT; default to 8000 locally.
 CMD ["sh", "-c", "uv run --no-sync uvicorn green.api:app --host 0.0.0.0 --port ${PORT:-8000}"]

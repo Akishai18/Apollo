@@ -42,7 +42,7 @@ package boundaries (uv workspace members), not convention alone.
 | Core | `core/` | Engine, `MarketView`, `Strategy` contract, recorder, overfit gate. Env-agnostic. |
 | Adapters | `adapters/` | Pluggable environments. |
 | Sandbox | `sandbox/` | Isolation around untrusted `on_tick`. |
-| Validation | `validation/` | Static checks + gate orchestration. |
+| Validation | `core/overfit/` + `api/` | Walk-forward gate (in core) driven by the API job runner. |
 | API | `api/` | FastAPI (REST + WebSocket). |
 | Generator | `generator/` | LLM front-end → `Strategy` subclass (built last). |
 | Web | `web/` | Next.js frontend. |

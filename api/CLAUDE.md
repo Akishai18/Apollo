@@ -13,7 +13,7 @@ endpoints `GET /healthz`, `POST /runs`, `GET /runs`, `GET /runs/{id}`,
 `app.py`.
 Untrusted source **always** runs through `SandboxedStrategy` — no trusted
 in-process path. Deferred: Supabase Storage / Parquet artifacts and parallel
-sweep (see PLAN.md rationale); a hosted `PostgresRunStore` stub.
+sweep (see docs/PLAN.md rationale); a hosted `PostgresRunStore` stub.
 
 Invariants the tests pin:
 - The gate is sync + CPU-heavy + spawns sandbox subprocesses → it runs via

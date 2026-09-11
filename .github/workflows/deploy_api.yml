@@ -1,7 +1,8 @@
 name: Deploy API to Lightsail
 
 # Builds the Docker image, pushes it to ECR, and deploys it to the Lightsail
-# container service (created once by aws-apollo-setup.sh — see DEPLOY.md).
+# container service (created once by deploy/aws-apollo-setup.sh — see
+# deploy/README.md).
 #
 # Triggered by pushes to main (backend changes) or manual runs from the
 # Actions tab. Skips silently until the repo variable AWS_DEPLOY_ROLE_ARN is

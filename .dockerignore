@@ -5,8 +5,8 @@
 web
 data
 scripts
-trading
-validation
+docs
+deploy
 green.db
 **/.venv
 .venv

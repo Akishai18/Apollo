@@ -8,10 +8,14 @@ Three managed pieces:
   $7/mo nano tier; GitHub Actions builds and deploys on every push to main.
 - **Vercel** — the Next.js web app (`web/`).
 
-> History: the API originally ran on Render (`render.yaml` is the legacy
-> blueprint — delete it once the Lightsail cutover is verified). The Lightsail
-> setup mirrors the SignalM migration playbook
-> (`~/Downloads/AWS_LIGHTSAIL_MIGRATION_SUMMARY.md`).
+Files in this folder:
+
+- `aws-apollo-setup.sh` — one-time AWS setup (ECR repo, GitHub OIDC deploy
+  role, Lightsail container service). Run it from CloudShell, step 2 below.
+- `aws-apollo-fix-trust.sh` — repairs the deploy role's OIDC trust policy if
+  GitHub's subject-claim format or the repo name changes.
+
+The deploy workflow itself is `.github/workflows/deploy_api.yml`.
 
 ---
 
@@ -23,7 +27,7 @@ Three managed pieces:
    (port 6543) → this is `GREEN_DATABASE_URL`.
 
 ## 2. AWS — one-time setup (CloudShell, ~10 min)
-1. AWS console → **CloudShell** → Actions → **Upload file** → `aws-apollo-setup.sh`
+1. AWS console → **CloudShell** → Actions → **Upload file** → `deploy/aws-apollo-setup.sh`
    (upload the file; don't paste — long pastes get mangled).
 2. `bash aws-apollo-setup.sh` — creates the ECR repo (`apollo-api`), the GitHub
    OIDC deploy role (`apollo-github-deploy`, trust pinned to `Akishai18/Apollo`),
@@ -70,9 +74,9 @@ Three managed pieces:
 ---
 
 ## Sizing
-Nano (0.25 vCPU / 512 MB) is half the CPU of the old Render starter, so
-backtests run ~2× slower. If that bites, one command bumps the tier
-(micro $10 = 1 GB RAM; small $15 = 0.5 vCPU, the true Render match):
+Nano (0.25 vCPU / 512 MB) is the cheapest tier and backtests are CPU-bound,
+so they run slower there. If that bites, one command bumps the tier
+(micro $10 = 1 GB RAM; small $15 = 0.5 vCPU):
 
 ```sh
 aws lightsail update-container-service --service-name apollo-api --power small

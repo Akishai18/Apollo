@@ -26,7 +26,7 @@ environment adapters. Historical market data is the first faithful environment.
 | Core | `core/` | Engine loop, `MarketView`, `Strategy` contract, recorder, overfit gate. Environment-agnostic. The trust core. |
 | Adapters | `adapters/` | Pluggable environments (load data, view-at-`t`, apply orders, score). |
 | Sandbox | `sandbox/` | Isolation boundary around untrusted `on_tick`. |
-| Validation | `validation/` | Static checks + orchestration of the validation gates. |
+| Validation | `core/overfit/` + `api/` | Walk-forward overfit gate (in core) driven by the API job runner; every verdict carries the evidence the UI shows. |
 | API | `api/` | FastAPI backend (REST + WebSocket). |
 | Generator | `generator/` | LLM front-end that emits a `Strategy` subclass (built last). |
 | Web | `web/` | Next.js frontend — equity curves, overfit curves, sweep heatmaps, rejection panels. |
@@ -34,8 +34,10 @@ environment adapters. Historical market data is the first faithful environment.
 Each layer has its own `CLAUDE.md` describing the contract and invariants that
 edits to that layer must respect.
 
-The product model and target workflow live in [`PRODUCT.md`](./PRODUCT.md):
-Builder -> Backtest -> Visualizer -> Validation -> Report.
+The product model and target workflow live in [`docs/PRODUCT.md`](./docs/PRODUCT.md):
+Builder -> Backtest -> Visualizer -> Validation -> Report. The roadmap and
+implementation history are in [`docs/PLAN.md`](./docs/PLAN.md); hosting
+(AWS Lightsail + Vercel + Supabase) is documented in [`deploy/`](./deploy).
 
 ## Stack
 
